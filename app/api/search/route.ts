@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     const cards = results.map((r) => ({
       id: crypto.randomUUID(),
       brand: extractBrand(r.domain),
-      name: "Outfit",
+      name: cleanTitle(r.title, r.domain),
       price: null,
       occasion: null,
       tags: [] as string[],
@@ -66,6 +66,22 @@ const BRAND_MAP: Record<string, string> = {
   "indiancultr.com": "Indiancultr",
   "tfrstore.com": "TFR Store",
 };
+
+/**
+ * Strip brand suffixes and site names from a page title to get a cleaner product name.
+ * e.g. "Buy Blue Anarkali Suit | Anita Dongre" → "Blue Anarkali Suit"
+ */
+function cleanTitle(title: string, domain: string): string {
+  if (!title) return "Outfit";
+  // Strip everything after the last | or – or -
+  let clean = title.split(/\s*[|–—]\s*/).shift() ?? title;
+  // Strip trailing " - Brand Name" pattern
+  const brandName = extractBrand(domain);
+  clean = clean.replace(new RegExp(`\\s*-?\\s*${brandName}\\s*$`, "i"), "").trim();
+  // Strip common e-commerce prefixes like "Buy", "Shop"
+  clean = clean.replace(/^(buy|shop|order|get)\s+/i, "").trim();
+  return clean || "Outfit";
+}
 
 function extractBrand(domain: string): string {
   for (const [key, brand] of Object.entries(BRAND_MAP)) {

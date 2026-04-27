@@ -18,8 +18,9 @@ export interface UserContext {
 }
 
 export interface ProductResult {
-  uri: string;   // product page URL
+  uri: string;    // product page URL
   domain: string; // e.g. "ajio.com" — used for brand extraction
+  title: string;  // page title from search result, used as product name
 }
 
 // ─── Step 1: Gemini generates search queries (pure text, no grounding) ───────
@@ -89,7 +90,7 @@ async function executeSearchQueries(
   for (const item of allItems) {
     if (!seen.has(item.displayUrl)) {
       seen.add(item.displayUrl);
-      results.push({ uri: item.url, domain: item.displayUrl });
+      results.push({ uri: item.url, domain: item.displayUrl, title: item.title });
     }
     if (results.length >= 6) break;
   }
