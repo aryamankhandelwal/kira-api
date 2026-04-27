@@ -62,11 +62,16 @@ const BRAND_MAP: Record<string, string> = {
   "manishmalhotra.in": "Manish Malhotra",
   "fabindia.com": "Fabindia",
   "aza-fashions.com": "Aza Fashions",
+  "perniaspopupshop.com": "Pernia's Pop-Up Shop",
+  "indiancultr.com": "Indiancultr",
+  "tfrstore.com": "TFR Store",
 };
 
 function extractBrand(domain: string): string {
   for (const [key, brand] of Object.entries(BRAND_MAP)) {
     if (domain.includes(key)) return brand;
   }
-  return domain.split(".")[0];
+  // Auto-extract: strip www., take name before TLD, title-case
+  const name = domain.replace(/^www\./, "").split(".")[0];
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
