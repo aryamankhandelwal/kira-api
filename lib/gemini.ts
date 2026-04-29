@@ -34,6 +34,7 @@ async function generateSearchQueries(
     model: "gemini-2.0-flash-lite",
   });
 
+  const genderLabel = user.gender === "male" ? "men's" : "women's";
   const clothingTypes =
     user.gender === "male"
       ? "kurta sets, sherwanis, bandhgalas, Indo-western suits"
@@ -46,6 +47,8 @@ Gender: ${user.gender ?? "unspecified"}
 Clothing types to focus on: ${clothingTypes}
 
 Generate exactly 3 search queries that find INDIVIDUAL PRODUCT DETAIL PAGES (PDPs) — not brand homepages, category listings, or "shop all" pages.
+
+CRITICAL: Every query MUST include the word "${genderLabel}" or "${user.gender === "male" ? "men" : "women"}" to ensure gender-correct results. NEVER return queries that could match the opposite gender.
 
 A PDP URL looks like:
 - ajio.com/p/460908467
@@ -62,6 +65,7 @@ Rules for each query:
 - At least one query MUST include inurl:product OR inurl:/p/
 - Target Indian fashion retailers: Ajio, Nykaa Fashion, Myntra, Pernia's Pop-Up Shop, Aza Fashions, Raw Mango, Anita Dongre, Manyavar, etc.
 - NEVER use words like "collection", "shop all", "browse", "explore", "trending"
+- NEVER generate queries that would return blog posts, "best stores" articles, shopping guides, or "top 10" lists. Add -blog -"best stores" -"top 10" -guide to each query.
 
 Respond with ONLY the 3 queries, one per line. No numbering, no bullets, no extra text.`;
 
@@ -83,12 +87,30 @@ Respond with ONLY the 3 queries, one per line. No numbering, no bullets, no extr
 
 // ─── Step 2: Execute queries via Google CSE (parallel) ───────────────────────
 
+// ─── Gender post-filter ─────────────────────────────────────────────────────
+
+const MALE_REJECT_TERMS = /\b(lehenga|saree|sari|anarkali|sharara|bridal\s+wear|bride|bridesmaids?|women'?s|salwar|kurti|dupatta)\b/i;
+const FEMALE_REJECT_TERMS = /\b(sherwani|bandhgala|jodhpuri|men'?s\s+kurta|groom|groomsmen|indo.?western\s+suit)\b/i;
+
+// ─── Editorial / blog title filter ──────────────────────────────────────────
+
+const EDITORIAL_TITLE_PATTERN = /\b(best\s+\d*\s*(stores?|shops?|boutiques?|places?|brands?)|top\s+\d+|where\s+to\s+buy|shopping\s+guide|complete\s+guide|everything\s+you\s+need|stores?\s+in\s+|shops?\s+in\s+)\b/i;
+
+function isOppositeGender(title: string, url: string, gender?: string): boolean {
+  if (!gender) return false;
+  const text = `${title} ${url}`.toLowerCase();
+  if (gender === "male") return MALE_REJECT_TERMS.test(text);
+  if (gender === "female") return FEMALE_REJECT_TERMS.test(text);
+  return false;
+}
+
 async function executeSearchQueries(
   queries: string[],
-  maxResults: number = 6,
+  maxResults: number = 20,
+  gender?: string,
 ): Promise<ProductResult[]> {
   const settled = await Promise.allSettled(
-    queries.map((q) => braveSearch(q, 7))
+    queries.map((q) => braveSearch(q, 12))
   );
 
   const allItems: BraveSearchResult[] = [];
@@ -98,23 +120,32 @@ async function executeSearchQueries(
     }
   }
 
-  // Score and rank all URLs by PDP confidence, deduplicate by domain
+  // Score and rank all URLs by PDP confidence
   const scored: { item: BraveSearchResult; score: number }[] = [];
   for (const item of allItems) {
+    // Reject opposite-gender results
+    if (isOppositeGender(item.title, item.url, gender)) continue;
+    // Reject editorial/blog titles
+    if (EDITORIAL_TITLE_PATTERN.test(item.title)) continue;
+
     const score = scoreUrlPdpConfidence(item.url, item.displayUrl);
-    if (score >= 0) { // only accept URLs with at least neutral PDP confidence
+    if (score >= 0) {
       scored.push({ item, score });
     }
   }
 
-  // Sort by score descending, then deduplicate by domain
+  // Sort by score descending, allow up to 3 results per domain
   scored.sort((a, b) => b.score - a.score);
 
-  const seen = new Set<string>();
+  const domainCount = new Map<string, number>();
+  const seenUrls = new Set<string>();
   const results: ProductResult[] = [];
   for (const { item } of scored) {
-    if (seen.has(item.displayUrl)) continue;
-    seen.add(item.displayUrl);
+    if (seenUrls.has(item.url)) continue;
+    seenUrls.add(item.url);
+    const count = domainCount.get(item.displayUrl) ?? 0;
+    if (count >= 3) continue;
+    domainCount.set(item.displayUrl, count + 1);
     results.push({ uri: item.url, domain: item.displayUrl, title: item.title, thumbnail: item.thumbnail });
     if (results.length >= maxResults) break;
   }
@@ -156,6 +187,24 @@ function scoreUrlPdpConfidence(rawUrl: string, domain: string): number {
 
   // Hard reject: non-fashion pages
   if (/^\/(search|login|cart|account|about|contact|faq|help|blog|privacy|terms)(\/|$)/.test(path)) {
+    return -100;
+  }
+
+  // Hard reject: blog/editorial/guide pages anywhere in path
+  if (/\/(blog|article|guide|magazine|editorial|news|story|stories|reviews?)(\/|$)/.test(path)) {
+    return -100;
+  }
+
+  // Hard reject: "best-*-stores", "top-*" editorial slugs
+  if (/\/(best-|top-\d|where-to-buy|shopping-guide)/.test(path)) {
+    return -100;
+  }
+
+  // Hard reject: non-ecommerce domains (wedding planning, blogs, etc.)
+  const NON_ECOM_DOMAINS = ["weddingwire", "shaadisaga", "wedmegood", "vogue", "elle",
+    "brides", "pinterest", "instagram", "youtube", "facebook", "reddit", "quora",
+    "weddingbazaar", "weddingsutra", "bazaar", "grazia", "femina"];
+  if (NON_ECOM_DOMAINS.some((d) => domain.includes(d))) {
     return -100;
   }
 
@@ -323,7 +372,7 @@ Return ONLY valid JSON — no markdown fences, no explanation:
 export async function findOccasionWearURLs(
   occasion: string,
   user: UserContext,
-  maxResults: number = 10,
+  maxResults: number = 20,
 ): Promise<ProductResult[]> {
   // 1. Cache hit — zero API calls
   const cached = await getCachedResults(occasion, user.gender);
@@ -335,15 +384,16 @@ export async function findOccasionWearURLs(
     queries = await generateSearchQueries(occasion, user);
   } catch (err) {
     console.error("[gemini] query generation failed:", err);
+    const genderWord = user.gender === "male" ? "men's" : "women's";
     const clothingTypes =
       user.gender === "male"
         ? "sherwani kurta set"
         : "lehenga saree anarkali";
-    queries = [`${occasion} ${clothingTypes} buy online India`];
+    queries = [`${genderWord} ${occasion} ${clothingTypes} buy online India`];
   }
 
   // 3. Execute queries via Brave Search (over-fetch for resilience)
-  const results = await executeSearchQueries(queries, maxResults);
+  const results = await executeSearchQueries(queries, maxResults, user.gender);
 
   // 4. Cache result (fire-and-forget)
   if (results.length > 0) setCachedResults(occasion, user.gender, results);

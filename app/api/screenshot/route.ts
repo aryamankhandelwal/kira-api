@@ -35,6 +35,63 @@ function isTrustedCdnUrl(url: string): boolean {
   return TRUSTED_CDN_PATTERNS.some((p) => p.test(url));
 }
 
+// ─── Image URL upscaling ─────────────────────────────────────────────────────
+
+function upscaleImageUrl(imgUrl: string): string {
+  try {
+    // Shopify CDN: replace _NNxNN or _NNx with larger dimensions
+    if (/cdn\.shopify\.com/i.test(imgUrl)) {
+      return imgUrl
+        .replace(/_\d{2,4}x\d{0,4}\./, '_1200x.')
+        .replace(/&width=\d+/, '&width=1200');
+    }
+
+    // Cloudinary: insert w_1200,q_auto transform
+    if (/res\.cloudinary\.com/i.test(imgUrl)) {
+      // Replace existing w_NNN transform or insert before /v1/
+      if (/\/w_\d+/.test(imgUrl)) {
+        return imgUrl.replace(/\/w_\d+/, '/w_1200');
+      }
+      return imgUrl.replace(/(\/image\/upload\/)/, '$1w_1200,q_auto/');
+    }
+
+    // Ajio assets: replace w-NNN with w-1200
+    if (/assets\.ajio\.com|images\.ajio\.com/i.test(imgUrl)) {
+      return imgUrl.replace(/\/w-\d+\//, '/w-1200/');
+    }
+
+    // Myntra assets: replace h_NNN,q_NNN,w_NNN with larger
+    if (/assets\.myntassets\.com/i.test(imgUrl)) {
+      return imgUrl
+        .replace(/\/h_\d+,/, '/h_1600,')
+        .replace(/\/w_\d+,/, '/w_1200,')
+        .replace(/\/q_\d+,/, '/q_95,');
+    }
+
+    // Pernia's Pop-Up Shop CDN
+    if (/cdn\.perniaspopupshop\.com/i.test(imgUrl)) {
+      return imgUrl.replace(/\/w\d+\//, '/w1200/');
+    }
+
+    // General: strip common thumbnail query params
+    const url = new URL(imgUrl);
+    let changed = false;
+    for (const key of ['w', 'width', 'h', 'height', 'size', 'thumb']) {
+      if (url.searchParams.has(key)) {
+        const val = parseInt(url.searchParams.get(key)!);
+        if (!isNaN(val) && val < 800) {
+          url.searchParams.set(key, '1200');
+          changed = true;
+        }
+      }
+    }
+    if (changed) return url.toString();
+  } catch {
+    // URL parsing failed — return original
+  }
+  return imgUrl;
+}
+
 // ─── SPA shell detection ──────────────────────────────────────────────────────
 
 function detectSpaShell(html: string): boolean {
@@ -153,7 +210,7 @@ export async function POST(req: NextRequest) {
 
     // High-confidence static hit — return immediately without calling Gemini
     if (best && best.score >= 80) {
-      return NextResponse.json({ ok: true, image_url: best.url });
+      return NextResponse.json({ ok: true, image_url: upscaleImageUrl(best.url) });
     }
 
     // ── Phase B: Gemini agent ─────────────────────────────────────────────────
@@ -174,7 +231,7 @@ export async function POST(req: NextRequest) {
               if (pdpResult?.found && pdpResult.image_url) {
                 return NextResponse.json({
                   ok: true,
-                  image_url: pdpResult.image_url,
+                  image_url: upscaleImageUrl(pdpResult.image_url),
                   resolved_url: geminiResult.product_url,
                 });
               }
@@ -182,7 +239,7 @@ export async function POST(req: NextRequest) {
               // PDP fetch failed — fall through
             }
           } else if (geminiResult.found && geminiResult.image_url) {
-            return NextResponse.json({ ok: true, image_url: geminiResult.image_url });
+            return NextResponse.json({ ok: true, image_url: upscaleImageUrl(geminiResult.image_url) });
           }
         }
       } catch (err) {
@@ -193,15 +250,15 @@ export async function POST(req: NextRequest) {
     // ── Phase C: Brave thumbnail CDN trust check ──────────────────────────────
     // Thumbnails from known fashion CDNs are reliable product photos
     if (thumbnail_url && isTrustedCdnUrl(thumbnail_url)) {
-      return NextResponse.json({ ok: true, image_url: thumbnail_url });
+      return NextResponse.json({ ok: true, image_url: upscaleImageUrl(thumbnail_url) });
     }
 
     // ── Phase D: Best available fallback ──────────────────────────────────────
     if (best) {
-      return NextResponse.json({ ok: true, image_url: best.url });
+      return NextResponse.json({ ok: true, image_url: upscaleImageUrl(best.url) });
     }
     if (thumbnail_url) {
-      return NextResponse.json({ ok: true, image_url: thumbnail_url });
+      return NextResponse.json({ ok: true, image_url: upscaleImageUrl(thumbnail_url) });
     }
 
     return NextResponse.json({ ok: false, error: "No product image found" }, { status: 404 });

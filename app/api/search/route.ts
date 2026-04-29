@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       shouldersIn: body.shoulders_in,
       sleeveLengthIn: body.sleeve_length_in,
       inseamIn: body.inseam_in,
-    });
+    }, 20);
 
     // Return cards immediately without images — iOS fetches each screenshot separately
     const cards = results.map((r) => ({
