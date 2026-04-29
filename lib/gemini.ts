@@ -196,6 +196,128 @@ function scoreUrlPdpConfidence(rawUrl: string, domain: string): number {
   return score;
 }
 
+// ─── Gemini image extraction from HTML ───────────────────────────────────────
+
+export interface GeminiImageResult {
+  page_type: 'pdp' | 'listing';
+  found: boolean;
+  image_url: string | null;
+  product_url: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+}
+
+// Per-instance rate limiter — stays under the 15 RPM free limit
+const _geminiImageCallLog: number[] = [];
+
+function canCallGeminiForImage(): boolean {
+  const now = Date.now();
+  const windowStart = now - 60_000;
+  while (_geminiImageCallLog.length > 0 && _geminiImageCallLog[0] < windowStart) {
+    _geminiImageCallLog.shift();
+  }
+  return _geminiImageCallLog.length < 12; // 12/15 RPM safety margin
+}
+
+function recordGeminiImageCall(): void {
+  _geminiImageCallLog.push(Date.now());
+}
+
+function prepareHtmlForGemini(html: string): string {
+  const parts: string[] = [];
+
+  // All JSON-LD blocks (Product schema lives here)
+  const jsonLdPattern = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = jsonLdPattern.exec(html)) !== null) {
+    parts.push(`[JSON-LD]:\n${m[1].slice(0, 2000)}`);
+  }
+
+  // __NEXT_DATA__ blob (Next.js / Ajio / Myntra / Nykaa embed product data here)
+  const nextDataMatch = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (nextDataMatch) {
+    parts.push(`[__NEXT_DATA__]:\n${nextDataMatch[1].slice(0, 3000)}`);
+  }
+
+  // First 5 000 chars of body HTML
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const bodyText = bodyMatch ? bodyMatch[1] : html;
+  parts.push(`[BODY HTML]:\n${bodyText.slice(0, 5000)}`);
+
+  return parts.join('\n\n');
+}
+
+/**
+ * Ask Gemini to:
+ *   1. Classify the page (PDP vs listing/splash)
+ *   2. Extract the product image URL — or, for a listing page, a PDP link to follow
+ *
+ * Returns null when rate-limited or on parse failure.
+ */
+export async function extractProductImageFromHtml(
+  pageUrl: string,
+  html: string,
+): Promise<GeminiImageResult | null> {
+  if (!canCallGeminiForImage()) {
+    console.warn('[gemini] image-extraction rate limit reached, skipping');
+    return null;
+  }
+
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+  const truncatedHtml = prepareHtmlForGemini(html);
+
+  const prompt = `You are a product page agent for an Indian fashion e-commerce app.
+
+Task 1 — Classify this page. Is it a Product Detail Page (PDP) showing a single purchasable item, or is it a splash / home / category / collection / listing page?
+
+Task 2 — Extract:
+- If PDP: the main product photo URL — a large (600 px+), portrait-orientation image of the garment on a model or mannequin.
+- If NOT a PDP: the URL of the first individual product detail page linked from this page.
+
+Where to look for images:
+• JSON-LD Product schema "image" field
+• og:image meta tag
+• data-src / data-lazy-src attributes on <img> tags
+• __NEXT_DATA__ JSON blobs — search for keys like images[0].src, featuredImage.url, media[0].src
+• window.__INITIAL_STATE__ or similar inline JS objects
+• Shopify CDN: cdn.shopify.com/s/files/.../products/
+• Cloudinary: res.cloudinary.com/.../image/upload/
+
+Do NOT return: brand logos, nav icons, social-share banners, multi-product lifestyle photos.
+Do NOT return for product_url: login, cart, category listing, or collection pages.
+
+URL: ${pageUrl}
+HTML (truncated):
+${truncatedHtml}
+
+Return ONLY valid JSON — no markdown fences, no explanation:
+{"page_type":"pdp","found":true,"image_url":"https://...","product_url":null,"confidence":"high","reason":"brief"}`;
+
+  recordGeminiImageCall();
+
+  try {
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text().trim()
+      .replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+
+    const parsed = JSON.parse(raw) as GeminiImageResult;
+
+    // Sanitise — reject non-URL strings that Gemini occasionally returns
+    if (parsed.image_url && !parsed.image_url.startsWith('http')) {
+      parsed.image_url = null;
+      parsed.found = false;
+    }
+    if (parsed.product_url && !parsed.product_url.startsWith('http')) {
+      parsed.product_url = null;
+    }
+
+    return parsed;
+  } catch (err) {
+    console.error('[gemini] extractProductImageFromHtml failed:', err);
+    return null;
+  }
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export async function findOccasionWearURLs(
