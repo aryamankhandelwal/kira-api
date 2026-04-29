@@ -2,6 +2,7 @@ export interface BraveSearchResult {
   url: string;
   displayUrl: string; // bare domain, e.g. "ajio.com"
   title: string;
+  thumbnail: string | null;
 }
 
 export async function braveSearch(
@@ -35,5 +36,6 @@ export async function braveSearch(
     url: item.url,
     displayUrl: new URL(item.url).hostname.replace(/^www\./, ""),
     title: item.title ?? "",
+    thumbnail: item.thumbnail?.src ?? null,
   }));
 }

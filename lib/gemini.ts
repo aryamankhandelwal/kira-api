@@ -21,6 +21,7 @@ export interface ProductResult {
   uri: string;    // product page URL
   domain: string; // e.g. "ajio.com" — used for brand extraction
   title: string;  // page title from search result, used as product name
+  thumbnail: string | null; // Brave Search thumbnail URL
 }
 
 // ─── Step 1: Gemini generates search queries (pure text, no grounding) ───────
@@ -114,7 +115,7 @@ async function executeSearchQueries(
   for (const { item } of scored) {
     if (seen.has(item.displayUrl)) continue;
     seen.add(item.displayUrl);
-    results.push({ uri: item.url, domain: item.displayUrl, title: item.title });
+    results.push({ uri: item.url, domain: item.displayUrl, title: item.title, thumbnail: item.thumbnail });
     if (results.length >= maxResults) break;
   }
 

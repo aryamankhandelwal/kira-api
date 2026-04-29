@@ -38,6 +38,7 @@ export async function POST(req: NextRequest) {
       occasion: null,
       tags: [] as string[],
       image_base64: null,
+      thumbnail_url: r.thumbnail,
       sourceURL: r.uri,
     }));
 
