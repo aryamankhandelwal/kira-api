@@ -3,6 +3,7 @@ export type Gender = "male" | "female" | "kids" | "unknown";
 // Use regex patterns with word boundaries so "men" never matches inside "women"
 const KIDS_PATTERNS = [
   /\bkids?\b/, /\bboys?\b/, /\bgirls?\b/, /\bbaby\b/, /\binfant\b/, /\btoddler\b/,
+  /set\s+of\s+[3-9]/,  // 3+ piece ethnic sets are almost always kids on Indian fashion sites
 ];
 const MALE_PATTERNS = [
   /\bmen\b/, /\bmens\b/, /\bmen's\b/, /\bsherwani\b/, /\bkurta\s+for\s+men\b/,
