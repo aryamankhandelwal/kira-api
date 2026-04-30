@@ -93,19 +93,20 @@ export async function POST(req: NextRequest) {
   }
 
   const filtered = (data as Product[]).filter((p) => {
-    // Prefer stored gender (set at ingest time) — it has category context the
-    // classifier can't recover from title/URL alone.
-    if (p.gender) {
-      if (userGender === "male") return p.gender === "male" || p.gender === "unisex";
-      if (userGender === "female") return p.gender === "female" || p.gender === "unisex";
-      return true;
-    }
-
-    // Fallback: classify from title/URL for legacy rows without a stored gender.
-    const { gender, exclude } = classifyProduct(p);
+    // Always run the classifier — it catches off-gender items that were
+    // mis-tagged at ingest time (e.g. a women's kurta scraped under "mens kurta").
+    const { gender: classified, exclude } = classifyProduct(p);
     if (exclude) return false;
-    if (userGender === "male") return gender === "male" || gender === "unknown";
-    if (userGender === "female") return gender === "female" || gender === "unknown";
+
+    // Prefer the classifier when it's confident; fall back to stored gender,
+    // then "unknown" for legacy rows with no stored gender at all.
+    const effectiveGender: string =
+      classified !== "unknown" ? classified : (p.gender ?? "unknown");
+
+    if (userGender === "male")
+      return effectiveGender === "male" || effectiveGender === "unisex" || effectiveGender === "unknown";
+    if (userGender === "female")
+      return effectiveGender === "female" || effectiveGender === "unisex" || effectiveGender === "unknown";
     return true;
   });
 

@@ -8,10 +8,12 @@ const KIDS_PATTERNS = [
 const MALE_PATTERNS = [
   /\bmen\b/, /\bmens\b/, /\bmen's\b/, /\bsherwani\b/, /\bkurta\s+for\s+men\b/,
   /\bpathani\b/, /\bnehru\b/, /\bbandhgala\b/,
+  /\bkurta\s+pajama\b/, /\bkurta\s+churidar\b/,
 ];
 const FEMALE_PATTERNS = [
   /\bwomen\b/, /\bwomens\b/, /\bwomen's\b/, /\bkurti\b/, /\blehenga\b/,
   /\bsaree\b/, /\bsari\b/, /\banarkali\b/, /\bsalwar\b/, /\bdupatta\b/,
+  /\bstraight\s+kurta\b/, /\bpalazzo\b/, /\ba[\s-]line\b/, /\bpeplum\b/, /\bkurta\s+pant\b/,
 ];
 
 const KIDS_URL_SEGMENTS = ["/kids", "/boys", "/girls", "/baby", "/infant"];
