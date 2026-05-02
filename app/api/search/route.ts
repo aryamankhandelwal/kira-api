@@ -16,6 +16,11 @@ interface Product {
   product_url: string;
   source: string;
   gender: string | null;
+  garment_type: string | null;
+  color: string | null;
+  fabric: string | null;
+  embellishments: string[];
+  currency: string | null;
 }
 
 /** Map a Supabase product row into the OutfitCard shape the iOS app expects. */
@@ -32,8 +37,14 @@ function toOutfitCard(p: Product) {
     brand,
     name,
     price: p.price != null ? `₹${p.price.toLocaleString("en-IN")}` : null,
+    price_numeric: p.price,
+    currency: p.currency ?? "INR",
     occasion: null,
     tags: [p.source],
+    garment_type: p.garment_type ?? null,
+    color: p.color ?? null,
+    fabric: p.fabric ?? null,
+    embellishments: p.embellishments ?? [],
     thumbnail_url: p.image_url,
     image_url: p.image_url,
     sourceURL: p.product_url,
