@@ -8,9 +8,17 @@ export interface ParsedQuery {
   max_price: number | null;
   min_price: number | null;
   fabrics: string[];
+  embellishments: string[];
   keywords: string[];
   gender_hint: "male" | "female" | null;
 }
+
+// Must match the values stored in the DB (from metadata.ts EMBELLISHMENTS)
+const VALID_EMBELLISHMENTS = [
+  "zardozi", "gota patti", "mirror work", "thread work", "block print",
+  "sequins", "resham", "embroidery", "crystals", "beads", "stone work",
+  "printed", "floral", "striped",
+];
 
 // Must match the values stored in the DB (from metadata.ts GARMENT_TYPES)
 const VALID_GARMENTS = [
@@ -50,6 +58,7 @@ Return a JSON object with these exact fields:
   "max_price": null,     // number in INR (convert "10k"→10000, "1 lakh"→100000) or null
   "min_price": null,     // number in INR or null
   "fabrics": [],         // e.g. ["silk", "georgette", "cotton", "chiffon", "velvet"]
+  "embellishments": [],  // subset of: [${VALID_EMBELLISHMENTS.join(", ")}]
   "keywords": [],        // only words that would literally appear in a product title
   "gender_hint": null    // "male", "female", or null — only if explicitly stated
 }
@@ -91,7 +100,23 @@ CRITICAL RULES:
     - "gold/champagne" → ["gold", "champagne", "rose gold", "copper", "bronze", "amber"]
     - "neutral/nude" → ["nude", "beige", "ivory", "cream", "taupe", "camel", "fawn", "ecru"]
 13. When no colour is mentioned, leave colors empty — do NOT guess a colour from the occasion.
-14. Prefer fabrics that signal quality even at accessible price points: silk, georgette, chiffon, velvet, organza, crepe — over synthetic or unspecified. Add these to fabrics[] when the occasion warrants it (e.g. wedding → ["silk", "georgette", "velvet", "chiffon"]).`;
+14. Prefer fabrics that signal quality even at accessible price points: silk, georgette, chiffon, velvet, organza, crepe — over synthetic or unspecified. Add these to fabrics[] when the occasion warrants it (e.g. wedding → ["silk", "georgette", "velvet", "chiffon"]).
+15. EMBELLISHMENT ALIASES — when the query contains a style or craft term, map it to the exact stored value(s):
+    - "mirrorwork", "mirror work", "shisha", "abla", "shisha work" → ["mirror work"]
+    - "zardozi", "zari", "zardosi", "zari work" → ["zardozi"]
+    - "gota", "gota patti", "gota work", "gotta patti" → ["gota patti"]
+    - "sequin", "sequins", "sequence", "shimmer", "glitter", "disco" → ["sequins"]
+    - "thread work", "threadwork", "kantha", "phulkari", "kasuti" → ["thread work"]
+    - "block print", "blockprint", "hand block", "ajrakh", "dabu", "bagru" → ["block print"]
+    - "embroidered", "embroidery", "chikankari", "lucknowi" → ["embroidery"]
+    - "crystal", "crystals", "swarovski", "rhinestone" → ["crystals"]
+    - "beaded", "beads", "moti", "pearl work" → ["beads"]
+    - "stone work", "stonework", "kundan", "polki", "meenakari" → ["stone work"]
+    - "resham", "silk thread", "resham work" → ["resham"]
+    - "printed", "digital print", "screen print" → ["printed"]
+    - "floral", "floral print", "flower print" → ["floral"]
+    - "striped", "stripes", "stripe" → ["striped"]
+    Style terms NOT in the above list (e.g. "bandhani", "banarasi", "ikat", "kalamkari", "patola", "chanderi", "mul mul") are NOT in embellishments — put them in keywords[] instead so they match product titles via text search.`;
 
 const EMPTY_PARSED: ParsedQuery = {
   garment_types: [],
@@ -99,6 +124,7 @@ const EMPTY_PARSED: ParsedQuery = {
   max_price: null,
   min_price: null,
   fabrics: [],
+  embellishments: [],
   keywords: [],
   gender_hint: null,
 };
@@ -128,6 +154,9 @@ export async function parseSearchQuery(occasion: string, gender?: string): Promi
       max_price: typeof parsed.max_price === "number" ? parsed.max_price : null,
       min_price: typeof parsed.min_price === "number" ? parsed.min_price : null,
       fabrics: Array.isArray(parsed.fabrics) ? parsed.fabrics : [],
+      embellishments: (parsed.embellishments ?? []).filter((e: string) =>
+        VALID_EMBELLISHMENTS.includes(e)
+      ),
       keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
       gender_hint:
         parsed.gender_hint === "male" || parsed.gender_hint === "female"

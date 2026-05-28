@@ -224,6 +224,11 @@ export async function POST(req: NextRequest) {
     dbQuery = dbQuery.in("fabric", parsed.fabrics);
   }
 
+  // Embellishments filter — array overlap: product must have at least one matching embellishment
+  if (parsed.embellishments.length > 0) {
+    dbQuery = dbQuery.overlaps("embellishments", parsed.embellishments);
+  }
+
   dbQuery = dbQuery.limit(60);
 
   const { data, error } = await dbQuery;
