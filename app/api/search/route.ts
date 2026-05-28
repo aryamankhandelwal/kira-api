@@ -182,6 +182,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // ── Test fixture short-circuit (no Gemini call) ───────────────────
+  if (occasion.trim().toLowerCase() === "test prompt") {
+    const { data: testData, error: testError } = await supabase
+      .from("products")
+      .select("*")
+      .not("image_url", "is", null)
+      .neq("image_url", "")
+      .order("id")
+      .limit(20);
+
+    if (testError) {
+      return NextResponse.json({ ok: false, error: testError.message }, { status: 500 });
+    }
+
+    const cards = (testData as Product[]).map(toOutfitCard);
+    return NextResponse.json({ ok: true, cards, _parsed: { _test: true } });
+  }
+
   // Parse occasion into structured filters via Gemini (pass gender so it can tailor garment suggestions)
   const parsed = await parseSearchQuery(occasion, userGender);
 
@@ -224,9 +242,19 @@ export async function POST(req: NextRequest) {
     dbQuery = dbQuery.in("fabric", parsed.fabrics);
   }
 
-  // Embellishments filter — array overlap: product must have at least one matching embellishment
+  // Embellishments filter — OR: tagged in embellishments column OR appears in title
+  // (catches products where the scraper extracted the tag AND ones where it's only in the title)
   if (parsed.embellishments.length > 0) {
-    dbQuery = dbQuery.overlaps("embellishments", parsed.embellishments);
+    const orParts = parsed.embellishments
+      .flatMap((e) => {
+        const parts = [`embellishments.cs.{${e}}`, `title.ilike.%${e}%`];
+        // Also try the no-space variant so "mirror work" matches "mirrorwork" in titles
+        const noSpace = e.replace(/\s+/g, "");
+        if (noSpace !== e) parts.push(`title.ilike.%${noSpace}%`);
+        return parts;
+      })
+      .join(",");
+    dbQuery = dbQuery.or(orParts);
   }
 
   dbQuery = dbQuery.limit(60);
