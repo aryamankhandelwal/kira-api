@@ -109,13 +109,19 @@ function rankScore(p: Product): number {
  */
 const EMBELLISHMENT_ALIASES: Record<string, string[]> = {
   "mirror work":  ["shisha", "abla", "sitara", "mirrorwork", "shishay"],
-  "embroidery":   ["chikankari", "chikan", "lucknowi", "kantha", "aari", "nakshi"],
+  "embroidery":   ["chikankari", "chikan", "lucknowi", "kantha", "aari", "nakshi",
+                   "schiffli", "cutwork", "shadow work", "sozni", "kashida", "handwork",
+                   "applique", "patchwork"],
   "thread work":  ["phulkari", "kantha", "kasuti", "mukaish", "badla", "kamdani"],
   "stone work":   ["kundan", "polki", "meenakari"],
-  "block print":  ["ajrakh", "dabu", "bagru"],
-  "zardozi":      ["zardosi", "zari work"],
+  "block print":  ["ajrakh", "dabu", "bagru", "kalamkari", "hand block", "batik"],
+  "printed":      ["bandhani", "bandhej", "ikat", "laheriya", "tie dye", "warli",
+                   "madhubani", "pichwai", "kalamkari"],
+  "zardozi":      ["zardosi", "zari work", "tilla"],
   "gota patti":   ["gota work", "gotta patti"],
-  "sequins":      ["sequin", "glitter"],
+  "sequins":      ["sequin", "glitter", "sequence", "sequences", "sequence work", "paillette"],
+  "beads":        ["cutdana", "cuttdana", "moti work"],
+  "resham":       ["resham work"],
 };
 
 function expandSearchTerms(terms: string[]): string[] {

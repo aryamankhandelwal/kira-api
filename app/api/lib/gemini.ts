@@ -64,7 +64,7 @@ Return a JSON object with these exact fields:
   "colors": [],          // subset of: [${VALID_COLORS.join(", ")}]
   "max_price": null,     // number in INR (convert "10k"→10000, "1 lakh"→100000) or null
   "min_price": null,     // number in INR or null
-  "fabrics": [],         // e.g. ["silk", "georgette", "cotton", "chiffon", "velvet"]
+  "fabrics": [],         // e.g. ["silk", "georgette", "cotton", "chiffon", "velvet", "tussar", "dupion", "tissue", "art silk", "viscose", "pashmina", "wool"]
   "embellishments": [],  // subset of: [${VALID_EMBELLISHMENTS.join(", ")}]
   "keywords": [],        // only words that would literally appear in a product title
   "gender_hint": null    // "male", "female", or null — only if explicitly stated
@@ -109,21 +109,22 @@ CRITICAL RULES:
 13. When no colour is mentioned, leave colors empty — do NOT guess a colour from the occasion.
 14. Prefer fabrics that signal quality even at accessible price points: silk, georgette, chiffon, velvet, organza, crepe — over synthetic or unspecified. Add these to fabrics[] when the occasion warrants it (e.g. wedding → ["silk", "georgette", "velvet", "chiffon"]).
 15. EMBELLISHMENT ALIASES — when the query contains a style or craft term, map it to the exact stored value(s):
-    - "mirrorwork", "mirror work", "shisha", "abla", "shisha work" → ["mirror work"]
-    - "zardozi", "zari", "zardosi", "zari work" → ["zardozi"]
+    - "mirrorwork", "mirror work", "shisha", "abla", "shisha work", "sitara" → ["mirror work"]
+    - "zardozi", "zari", "zardosi", "zari work", "tilla" → ["zardozi"]
     - "gota", "gota patti", "gota work", "gotta patti" → ["gota patti"]
-    - "sequin", "sequins", "sequence", "shimmer", "glitter", "disco" → ["sequins"]
-    - "thread work", "threadwork", "kantha", "phulkari", "kasuti" → ["thread work"]
-    - "block print", "blockprint", "hand block", "ajrakh", "dabu", "bagru" → ["block print"]
-    - "embroidered", "embroidery", "chikankari", "lucknowi" → ["embroidery"]
+    - "sequin", "sequins", "sequence", "sequences", "sequence work", "shimmer", "glitter", "disco" → ["sequins"]
+    - "thread work", "threadwork", "kantha", "phulkari", "kasuti", "mukaish", "badla" → ["thread work"]
+    - "block print", "blockprint", "hand block", "ajrakh", "dabu", "bagru", "kalamkari", "batik" → ["block print"]
+    - "embroidered", "embroidery", "chikankari", "lucknowi", "cutwork", "schiffli", "sozni", "kashida", "applique", "shadow work", "handwork" → ["embroidery"]
+    - "bandhani", "bandhej", "ikat", "laheriya", "tie dye", "warli", "madhubani", "pichwai" → ["printed"]
     - "crystal", "crystals", "swarovski", "rhinestone" → ["crystals"]
-    - "beaded", "beads", "moti", "pearl work" → ["beads"]
+    - "beaded", "beads", "moti", "pearl work", "cutdana", "cuttdana" → ["beads"]
     - "stone work", "stonework", "kundan", "polki", "meenakari" → ["stone work"]
     - "resham", "silk thread", "resham work" → ["resham"]
     - "printed", "digital print", "screen print" → ["printed"]
     - "floral", "floral print", "flower print" → ["floral"]
     - "striped", "stripes", "stripe" → ["striped"]
-    Style terms NOT in the above list (e.g. "bandhani", "banarasi", "ikat", "kalamkari", "patola", "chanderi", "mul mul") are NOT in embellishments — put them in keywords[] instead so they match product titles via text search.`;
+    Style terms NOT in the above list (e.g. "banarasi", "patola", "chanderi", "mul mul") are NOT in embellishments — put them in keywords[] instead so they match product titles via text search.`;
 
 // ── Follow-up questions ──────────────────────────────────────────────
 
@@ -191,7 +192,7 @@ Apply ALL cultural and styling rules:
 - bride → ["lehenga"] only; sangeet → ["lehenga", "sharara", "gharara", "anarkali"]
 - reception → ["lehenga", "gown", "saree"]; saree only for reception/puja/office/explicit
 - Color families: "pink" → ["pink","blush","rose gold","dusty rose","mauve","peach","coral","fuchsia","magenta"], etc.
-- Embellishment aliases: "mirrorwork"→["mirror work"], "kundan"→["stone work"], "sequin"→["sequins"], etc.
+- Embellishment aliases: "mirrorwork"→["mirror work"], "shisha"/"abla"→["mirror work"], "kundan"→["stone work"], "sequin"/"sequence"→["sequins"], "tilla"→["zardozi"], "sozni"/"kashida"→["embroidery"], "bandhani"/"ikat"/"laheriya"→["printed"], "kalamkari"/"batik"→["block print"], "cutdana"→["beads"], etc.
 - Add quality fabrics for the occasion (wedding → ["silk","georgette","velvet","chiffon"])
 - Embellishments: if the user already named a specific embellishment (mirror work, zardozi, sequins, etc.), use ONLY that — never add more. For celebratory occasions where none is named, add one or two at most: ["embroidery"] for general; ["sequins"] for cocktail/party; ["zardozi"] or ["gota patti"] for high-end bridal. For everyday/office/puja, leave embellishments empty.
 - Price clues: "under 10k"→max_price:10000, "budget"→max_price:5000, "luxury"→min_price:20000`;
