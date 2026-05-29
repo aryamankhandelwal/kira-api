@@ -103,8 +103,8 @@ function rankScore(p: Product): number {
 
 /**
  * Bonus for products where the searched terms appear prominently in the title.
- * A product titled "Mirror Work Lehenga" should outrank one tagged with mirror work
- * but titled "Floral Embroidered Saree with Mirror Work Border".
+ * Distinguishes primary features ("Mirror Work Lehenga") from accents
+ * ("Floral Suit Set With Mirror Work") and penalises the latter.
  */
 function titleRelevanceBonus(p: Product, terms: string[]): number {
   if (!terms.length) return 0;
@@ -114,12 +114,28 @@ function titleRelevanceBonus(p: Product, terms: string[]): number {
     const t = term.toLowerCase();
     const tNoSpace = t.replace(/\s+/g, "");
     const idx = title.indexOf(t) !== -1 ? title.indexOf(t) : title.indexOf(tNoSpace);
-    if (idx !== -1) {
-      bonus += 3;           // term appears in title at all
-      if (idx < 35) bonus += 2; // appears early → primary descriptor, not a footnote
-    }
+    if (idx === -1) continue;
+
+    bonus += 2; // term appears in title at all
+
+    if (idx < 35) bonus += 2; // appears early → primary descriptor
+
+    // Detect "... with mirror work" / "... and mirror work" — accent, not primary feature
+    // e.g. "Beige Georgette Floral Print Suit Set With Mirror Work"
+    const beforeTerm = title.slice(Math.max(0, idx - 15), idx).trimEnd();
+    const isAccent = /\b(with|and|featuring|includes?|has)\s*$/.test(beforeTerm);
+
+    // Detect "mirror work detail / trim / border" — minor finishing detail
+    const afterTerm = title.slice(idx + t.length, idx + t.length + 20);
+    const isDiminished = /^\s*(detail|trim|border|accent|touch|finish)/.test(afterTerm);
+
+    if (isAccent || isDiminished) bonus -= 3;
+
+    // Detect "heavy / all over / intricate mirror work" — prominently featured
+    const isProminent = /\b(heavy|all[- ]over|dense|full|rich|intricate|elaborate|pure|extensive)\b/.test(beforeTerm);
+    if (isProminent) bonus += 2;
   }
-  return Math.min(bonus, 6); // cap so it doesn't fully override source tier
+  return Math.max(0, Math.min(bonus, 7));
 }
 function isSetProduct(p: Product): boolean {
   return /\b(pyjama|churidar|dupatta|set)\b| and /i.test(p.title);
@@ -383,9 +399,11 @@ export async function POST(req: NextRequest) {
     dbQuery = dbQuery.in("color", parsed.colors);
   }
 
-  // Fabric filter
+  // Fabric filter — also include null-fabric products (scraper didn't classify them).
+  // SQL IN never matches NULL, so .in() alone silently excludes unclassified products.
+  // Completeness score de-prioritises them in ranking vs. products with detected fabric.
   if (parsed.fabrics.length > 0) {
-    dbQuery = dbQuery.in("fabric", parsed.fabrics);
+    dbQuery = dbQuery.or(`fabric.in.(${parsed.fabrics.join(",")}),fabric.is.null`);
   }
 
   // Embellishments filter — OR: tagged in embellishments column OR appears in title
@@ -415,30 +433,67 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Gender filter (post-fetch, using classifier) ─────────────────
-  const filtered = (data as Product[]).filter((p) => {
+  // Extracted as named function so the cascade query below can reuse it.
+  const passesGender = (p: Product): boolean => {
     const { gender: classified, exclude } = classifyProduct(p);
     if (exclude) return false;
-
-    // DB gender is authoritative (set by the scraper for known-gender sources,
-    // e.g. sojanya/tasva/jade_blue = male). Fall back to runtime classifier only
-    // when the DB has no opinion, then to "unknown" as last resort.
+    // DB gender is authoritative (set by scraper for known-gender sources).
+    // Fall back to runtime classifier, then "unknown" as last resort.
     const dbGender = (p.gender && p.gender !== "unknown") ? p.gender : null;
     const resolvedGender: string = dbGender ?? (classified !== "unknown" ? classified : "unknown");
-
     if (effectiveUserGender === "male")
       return resolvedGender === "male" || resolvedGender === "unisex" || resolvedGender === "unknown";
     if (effectiveUserGender === "female")
       return resolvedGender === "female" || resolvedGender === "unisex" || resolvedGender === "unknown";
     return true;
-  });
+  };
 
-  // Terms the user explicitly searched for — used to boost title-prominent matches
+  const filtered = (data as Product[]).filter(passesGender);
   const searchTerms = [...parsed.embellishments, ...parsed.keywords];
-  const deduped = deduplicateProducts(filtered).sort(
-    (a, b) =>
-      (rankScore(b) + titleRelevanceBonus(b, searchTerms)) -
-      (rankScore(a) + titleRelevanceBonus(a, searchTerms))
-  );
+  const sortByRelevance = (a: Product, b: Product) =>
+    (rankScore(b) + titleRelevanceBonus(b, searchTerms)) -
+    (rankScore(a) + titleRelevanceBonus(a, searchTerms));
+
+  let deduped = deduplicateProducts(filtered).sort(sortByRelevance);
+
+  // ── Cascade: relax fabric+color when specific filters over-narrow results ─────
+  // Fires when: embellishments were specified AND fewer than 20 results survive dedup.
+  // PRESERVES garment_type — "mirror work saree" must stay sarees, not return lehengas.
+  // Drops only fabric + color (Gemini-inferred from occasion, not user-specified) to
+  // recover products with undetected or non-matching fabric/color metadata.
+  if (deduped.length < 20 && parsed.embellishments.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let fallback: any = supabase.from("products").select("*");
+    if (parsed.max_price != null) fallback = fallback.lte("price", parsed.max_price);
+    if (parsed.min_price != null) fallback = fallback.gte("price", parsed.min_price);
+
+    // Keep garment_type — user may have specified this explicitly (e.g. "mirror work saree")
+    if (parsed.garment_types.length > 0) {
+      const garmentOrParts = parsed.garment_types
+        .flatMap(t => [`garment_type.eq.${t}`, `title.ilike.%${t}%`])
+        .join(",");
+      fallback = fallback.or(garmentOrParts);
+    }
+
+    // Same embellishment filter as primary query
+    const embOrParts = parsed.embellishments
+      .flatMap((e) => {
+        const parts = [`embellishments.cs.{${e}}`, `title.ilike.%${e}%`];
+        const noSpace = e.replace(/\s+/g, "");
+        if (noSpace !== e) parts.push(`title.ilike.%${noSpace}%`);
+        return parts;
+      })
+      .join(",");
+
+    const { data: fallbackData } = await fallback.or(embOrParts).limit(60);
+    if (fallbackData) {
+      const existingIds = new Set(deduped.map(p => p.id));
+      const additional = (fallbackData as Product[])
+        .filter(passesGender)
+        .filter(p => !existingIds.has(p.id));
+      deduped = deduplicateProducts([...deduped, ...additional]).sort(sortByRelevance);
+    }
+  }
 
   // ── Size filter (post-fetch) ──────────────────────────────────────
   const userSize = (body.top_size || body.bottom_size || "").toUpperCase();
