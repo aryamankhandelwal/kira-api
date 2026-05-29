@@ -28,6 +28,25 @@ interface Product {
 // Sources where the title belongs to a third-party seller — use the platform name as brand
 const MARKETPLACE_SOURCES = new Set(["nykaa", "ajio", "tatacliq", "myntra", "azafashions", "kalkifashion", "fabindia"]);
 
+const SOURCE_TIER: Record<string, number> = {
+  // Tier 3 — Couture / luxury designers
+  manish_malhotra: 3, falguni_shane_peacock: 3, tarun_tahiliani: 3,
+  gaurav_gupta: 3, anamika_khanna: 3, rohit_bal: 3, punit_balana: 3, jayanti_reddy: 3,
+  // Tier 2 — Contemporary / bridge designers
+  anita_dongre: 2, raw_mango: 2, torani: 2, house_of_masaba: 2, payal_singhal: 2,
+  ridhi_mehra: 2, aisha_rao: 2, mishru: 2, sheetal_batra: 2, suruchi_parakh: 2,
+  studio_bagechaa: 2, devnaagri: 2, old_marigold: 2, ritu_kumar: 2,
+  saaksha_kinni: 2, taali: 2, basanti_ke_kapde: 2,
+  // Tier 1 — Curators / fashion-forward retailers / menswear specialists
+  perniaspopupshop: 1, azafashions: 1, ogaan: 1, ensemble: 1, aashni: 1,
+  the_loom: 1, kalkifashion: 1, manyavar: 1, tasva: 1, jade_blue: 1,
+  benzer: 1, ahi_clothing: 1, karaj_jaipur: 1, gyans: 1, pratap_sons: 1,
+  ridhiiee_suuri: 1, meena_bazaar: 1, jaipurkurti: 1, tjori: 1, nalli: 1,
+  bunaai: 1, indethnic: 1, weaverstory: 1,
+  // Tier 0 — mass market (default for anything not listed)
+};
+function sourceTier(source: string): number { return SOURCE_TIER[source] ?? 0; }
+
 /** Map a Supabase product row into the OutfitCard shape the iOS app expects. */
 function toOutfitCard(p: Product) {
   const isMarketplace = MARKETPLACE_SOURCES.has(p.source);
@@ -72,6 +91,14 @@ function completenessScore(p: Product): number {
   return (p.garment_type != null ? 1 : 0) +
          (p.color        != null ? 1 : 0) +
          (p.fabric       != null ? 1 : 0);
+}
+function embellishmentScore(p: Product): number {
+  return Math.min((p.embellishments ?? []).length, 3);
+}
+function rankScore(p: Product): number {
+  return (sourceTier(p.source) * 4) +
+         (completenessScore(p) * 3) +
+         (embellishmentScore(p) * 2);
 }
 function isSetProduct(p: Product): boolean {
   return /\b(pyjama|churidar|dupatta|set)\b| and /i.test(p.title);
@@ -153,6 +180,12 @@ const KNOWN_SUGGESTIONS = new Set([
   "Open to anything", "Pastels & soft tones", "Bold & vibrant", "Neutrals & nudes",
   "Traditional & classic", "Contemporary & fashion-forward", "Fusion & experimental",
   "Light & flowy", "Rich & structured", "Comfortable & breathable",
+  // embellishment_level
+  "Minimal & understated", "Elegant with some detail", "Heavily embellished & statement",
+  // occasion_formality
+  "Grand & traditional", "Chic & contemporary", "Relaxed & intimate",
+  // silhouette
+  "Long & flowing (lehenga / anarkali / saree)", "Straight cut (kurta / salwar / suit)", "Draped or co-ordinated sets",
 ]);
 
 function dedup<T>(arr: T[]): T[] { return [...new Set(arr)]; }
@@ -191,6 +224,21 @@ function mergeAnswers(
     if (answer === "Light & flowy")         { p = { ...p, fabrics: dedup([...p.fabrics, "georgette", "chiffon", "crepe"]) }; continue; }
     if (answer === "Rich & structured")     { p = { ...p, fabrics: dedup([...p.fabrics, "silk", "velvet", "brocade"]) }; continue; }
     // "Open to anything", "Comfortable & breathable", "Fusion & experimental" → no filter change
+
+    // Embellishment level
+    if (answer === "Minimal & understated")          { p = { ...p, embellishments: [] }; continue; }
+    if (answer === "Elegant with some detail")       { p = { ...p, embellishments: dedup([...p.embellishments, "embroidery", "thread work"]) }; continue; }
+    if (answer === "Heavily embellished & statement") { p = { ...p, embellishments: dedup([...p.embellishments, "zardozi", "gota patti", "mirror work", "stone work", "sequins", "crystals"]) }; continue; }
+
+    // Occasion formality / vibe
+    if (answer === "Grand & traditional")  { p = { ...p, fabrics: dedup([...p.fabrics, "silk", "velvet", "brocade"]), embellishments: dedup([...p.embellishments, "zardozi", "gota patti", "resham"]) }; continue; }
+    if (answer === "Chic & contemporary") { p = { ...p, fabrics: dedup([...p.fabrics, "georgette", "organza", "crepe"]), embellishments: dedup([...p.embellishments, "sequins", "crystals", "thread work"]) }; continue; }
+    if (answer === "Relaxed & intimate")  { p = { ...p, fabrics: dedup([...p.fabrics, "cotton", "chiffon", "georgette"]), embellishments: [] }; continue; }
+
+    // Silhouette (additive — broadens rather than resets garment_types)
+    if (answer === "Long & flowing (lehenga / anarkali / saree)") { p = { ...p, garment_types: dedup([...p.garment_types, "lehenga", "anarkali", "saree", "gown"]) }; continue; }
+    if (answer === "Straight cut (kurta / salwar / suit)")        { p = { ...p, garment_types: dedup([...p.garment_types, "kurta", "salwar", "suit", "kurti"]) }; continue; }
+    if (answer === "Draped or co-ordinated sets")                 { p = { ...p, garment_types: dedup([...p.garment_types, "saree", "co-ord", "sharara", "palazzo"]) }; continue; }
   }
   return p;
 }
@@ -334,7 +382,7 @@ export async function POST(req: NextRequest) {
     dbQuery = dbQuery.or(orParts);
   }
 
-  dbQuery = dbQuery.limit(60);
+  dbQuery = dbQuery.limit(90);
 
   const { data, error } = await dbQuery;
 
@@ -364,7 +412,7 @@ export async function POST(req: NextRequest) {
   });
 
   const deduped = deduplicateProducts(filtered).sort(
-    (a, b) => completenessScore(b) - completenessScore(a)
+    (a, b) => rankScore(b) - rankScore(a)
   );
 
   // ── Size filter (post-fetch) ──────────────────────────────────────
