@@ -226,16 +226,7 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
 
     // Sanitise parsed
     const rp = raw.parsed ?? {};
-    const sanitisedParsed: ParsedQuery = {
-      garment_types: (rp.garment_types ?? []).filter((g: string) => VALID_GARMENTS.includes(g)),
-      colors: (rp.colors ?? []).filter((c: string) => VALID_COLORS.includes(c)),
-      max_price: typeof rp.max_price === "number" ? rp.max_price : null,
-      min_price: typeof rp.min_price === "number" ? rp.min_price : null,
-      fabrics: Array.isArray(rp.fabrics) ? rp.fabrics : [],
-      embellishments: (rp.embellishments ?? []).filter((e: string) => VALID_EMBELLISHMENTS.includes(e)),
-      keywords: Array.isArray(rp.keywords) ? rp.keywords : [],
-      gender_hint: rp.gender_hint === "male" || rp.gender_hint === "female" ? rp.gender_hint : null,
-    };
+    const sanitisedParsed = sanitiseParsed(rp);
 
     // Sanitise questions — max 3, each with id/question/suggestions
     const rawQs: unknown[] = Array.isArray(raw.questions) ? raw.questions : [];
@@ -254,6 +245,20 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
   } catch {
     return { questions: [], parsed: { ...EMPTY_PARSED, keywords: [occasion] } };
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sanitiseParsed(raw: any): ParsedQuery {
+  return {
+    garment_types: (raw.garment_types ?? []).filter((g: string) => VALID_GARMENTS.includes(g)),
+    colors: (raw.colors ?? []).filter((c: string) => VALID_COLORS.includes(c)),
+    max_price: typeof raw.max_price === "number" ? raw.max_price : null,
+    min_price: typeof raw.min_price === "number" ? raw.min_price : null,
+    fabrics: Array.isArray(raw.fabrics) ? raw.fabrics : [],
+    embellishments: (raw.embellishments ?? []).filter((e: string) => VALID_EMBELLISHMENTS.includes(e)),
+    keywords: Array.isArray(raw.keywords) ? raw.keywords : [],
+    gender_hint: raw.gender_hint === "male" || raw.gender_hint === "female" ? raw.gender_hint : null,
+  };
 }
 
 const EMPTY_PARSED: ParsedQuery = {
@@ -282,27 +287,73 @@ export async function parseSearchQuery(occasion: string, gender?: string): Promi
     const parsed = JSON.parse(json) as ParsedQuery;
 
     // Sanitise: ensure arrays are arrays, values are in valid sets
-    return {
-      garment_types: (parsed.garment_types ?? []).filter((g: string) =>
-        VALID_GARMENTS.includes(g)
-      ),
-      colors: (parsed.colors ?? []).filter((c: string) =>
-        VALID_COLORS.includes(c)
-      ),
-      max_price: typeof parsed.max_price === "number" ? parsed.max_price : null,
-      min_price: typeof parsed.min_price === "number" ? parsed.min_price : null,
-      fabrics: Array.isArray(parsed.fabrics) ? parsed.fabrics : [],
-      embellishments: (parsed.embellishments ?? []).filter((e: string) =>
-        VALID_EMBELLISHMENTS.includes(e)
-      ),
-      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
-      gender_hint:
-        parsed.gender_hint === "male" || parsed.gender_hint === "female"
-          ? parsed.gender_hint
-          : null,
-    };
+    return sanitiseParsed(parsed);
   } catch {
     // On any failure, fall back to empty — route.ts will use keyword search
     return { ...EMPTY_PARSED, keywords: [occasion] };
+  }
+}
+
+// ── Refine search ───────────────────────────────────────────────────
+
+export interface RefineItem {
+  title: string;
+  garment_type: string | null;
+  color: string | null;
+  fabric: string | null;
+  embellishments: string[];
+  price: number | null;
+  source: string;
+}
+
+export async function refineSearchQuery(
+  existing: ParsedQuery,
+  refinement: string,
+  currentItem: RefineItem,
+  gender?: string,
+): Promise<ParsedQuery> {
+  try {
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      systemInstruction: SYSTEM_PROMPT,
+    });
+
+    const prompt = `Here are the current search filters for an Indian ethnic wear search:
+${JSON.stringify(existing)}
+
+The user is currently viewing this item:
+- Title: ${currentItem.title}
+- Garment type: ${currentItem.garment_type}
+- Color: ${currentItem.color}
+- Fabric: ${currentItem.fabric}
+- Embellishments: ${currentItem.embellishments.join(", ")}
+- Price: ${currentItem.price != null ? `₹${currentItem.price.toLocaleString("en-IN")}` : "unknown"}
+- Source: ${currentItem.source}
+
+Use this item to interpret what "this", "like this", or "similar" refers to in the refinement instruction.
+
+The user wants to refine their search with this instruction: "${refinement}"
+${gender ? `User gender: ${gender}` : ""}
+
+Return an updated version of the same JSON with ONLY the fields affected by the refinement changed. Do not modify fields the refinement does not mention. Preserve all existing values for unchanged fields.
+
+Return the same JSON shape:
+{
+  "garment_types": [],   // subset of: [${VALID_GARMENTS.join(", ")}]
+  "colors": [],          // subset of: [${VALID_COLORS.join(", ")}]
+  "max_price": null,     // number in INR or null
+  "min_price": null,     // number in INR or null
+  "fabrics": [],
+  "embellishments": [],  // subset of: [${VALID_EMBELLISHMENTS.join(", ")}]
+  "keywords": [],
+  "gender_hint": null
+}`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const json = text.replace(/^```(?:json)?\n?|\n?```$/g, "").trim();
+    return sanitiseParsed(JSON.parse(json));
+  } catch {
+    return existing; // graceful degradation — return unchanged query
   }
 }
