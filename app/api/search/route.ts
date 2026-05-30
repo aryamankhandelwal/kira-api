@@ -23,6 +23,7 @@ interface Product {
   embellishments: string[];
   currency: string | null;
   available_sizes: string[] | null;
+  style_register: string | null;
 }
 
 // Sources where the title belongs to a third-party seller — use the platform name as brand
@@ -49,6 +50,26 @@ const SOURCE_TIER: Record<string, number> = {
   kalkifashion: 0, chhabra555: 0, vastramay: 0, vasansi: 0, jaipurkurti: 0,
 };
 function sourceTier(source: string): number { return SOURCE_TIER[source] ?? 0; }
+
+const SOURCE_STYLE_REGISTER: Record<string, "contemporary" | "traditional" | "bridal" | "mixed"> = {
+  // contemporary
+  clothsvilla: "contemporary", suta: "contemporary", torani: "contemporary",
+  raw_mango: "contemporary", house_of_masaba: "contemporary", fashor: "contemporary",
+  w_for_woman: "contemporary", saaksha_kinni: "contemporary", devnaagri: "contemporary",
+  old_marigold: "contemporary", mishru: "contemporary", basanti_ke_kapde: "contemporary",
+  bunaai: "contemporary", studio_bagechaa: "contemporary",
+  // bridal
+  manish_malhotra: "bridal", gaurav_gupta: "bridal", falguni_shane_peacock: "bridal",
+  tarun_tahiliani: "bridal", anamika_khanna: "bridal", punit_balana: "bridal",
+  jayanti_reddy: "bridal", payal_singhal: "bridal", ridhi_mehra: "bridal", aisha_rao: "bridal",
+  // traditional
+  kankatala: "traditional", pothys: "traditional", nalli: "traditional",
+  kalkifashion: "traditional", chhabra555: "traditional", vastramay: "traditional",
+  vasansi: "traditional", jaipurkurti: "traditional",
+  // mixed
+  azafashions: "mixed", perniaspopupshop: "mixed", nykaa: "mixed",
+  ajio: "mixed", myntra: "mixed", anita_dongre: "mixed", ritu_kumar: "mixed",
+};
 
 /** Map a Supabase product row into the OutfitCard shape the iOS app expects. */
 function toOutfitCard(p: Product) {
@@ -172,6 +193,19 @@ function titleRelevanceBonus(p: Product, terms: string[]): number {
   }
   return Math.max(0, Math.min(bonus, 7));
 }
+const CONTEMPORARY_OCCASION = /\bengagement\b|\bcocktail\b|\bparty\b|\bsangeet\b|\breception\b|\bmehendi\b|\bmodern\b|\bcontemporary\b|\bfusion\b/i;
+const BRIDAL_OCCASION       = /\bbridal\b|\bbride\b|\bwedding\b/i;
+const TRADITIONAL_OCCASION  = /\bpuja\b|\btemple\b|\btraditional\b|\bclassic\b/i;
+
+function styleRegisterBoost(p: Product, occasion: string): number {
+  const reg = p.style_register ?? SOURCE_STYLE_REGISTER[p.source];
+  if (!reg || reg === "mixed") return 0;
+  if (reg === "contemporary" && CONTEMPORARY_OCCASION.test(occasion)) return 500;
+  if (reg === "bridal"       && BRIDAL_OCCASION.test(occasion))       return 500;
+  if (reg === "traditional"  && TRADITIONAL_OCCASION.test(occasion))  return 500;
+  return 0;
+}
+
 function isSetProduct(p: Product): boolean {
   return /\b(pyjama|churidar|dupatta|set)\b| and /i.test(p.title);
 }
@@ -487,8 +521,8 @@ export async function POST(req: NextRequest) {
   // Expand with craft/regional aliases so "mirror work" also boosts titles saying "shisha"
   const searchTerms = expandSearchTerms([...parsed.embellishments, ...parsed.keywords]);
   const sortByRelevance = (a: Product, b: Product) =>
-    (rankScore(b) + titleRelevanceBonus(b, searchTerms)) -
-    (rankScore(a) + titleRelevanceBonus(a, searchTerms));
+    (rankScore(b) + titleRelevanceBonus(b, searchTerms) + styleRegisterBoost(b, occasion)) -
+    (rankScore(a) + titleRelevanceBonus(a, searchTerms) + styleRegisterBoost(a, occasion));
 
   let deduped = deduplicateProducts(filtered).sort(sortByRelevance);
 
