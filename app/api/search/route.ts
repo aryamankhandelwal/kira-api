@@ -24,6 +24,8 @@ interface Product {
   currency: string | null;
   available_sizes: string[] | null;
   style_register: string | null;
+  like_count: number;
+  dislike_count: number;
 }
 
 // Sources where the title belongs to a third-party seller — use the platform name as brand
@@ -148,6 +150,65 @@ const EMBELLISHMENT_ALIASES: Record<string, string[]> = {
   "resham":       ["resham work"],
 };
 
+// ── Taste profile ──────────────────────────────────────────────────────
+
+interface TasteCard {
+  garment_type: string | null;
+  color: string | null;
+  fabric: string | null;
+  embellishments: string[];
+  source: string | null;
+}
+
+interface TasteVector {
+  garment_types: Record<string, number>;
+  colors: Record<string, number>;
+  fabrics: Record<string, number>;
+  embellishments: Record<string, number>;
+  style_registers: Record<string, number>;
+}
+
+async function fetchTasteCards(userId: string): Promise<{ liked: TasteCard[]; disliked: TasteCard[] }> {
+  const [likedRes, dislikedRes, savedRes] = await Promise.all([
+    supabase.from("liked_outfits")
+      .select("garment_type,color,fabric,embellishments,source")
+      .eq("user_id", userId).order("liked_at", { ascending: false }).limit(50),
+    supabase.from("disliked_outfits")
+      .select("garment_type,color,fabric,embellishments,source")
+      .eq("user_id", userId).order("disliked_at", { ascending: false }).limit(50),
+    supabase.from("saved_outfits")
+      .select("garment_type,color,fabric,embellishments,tags")
+      .eq("user_id", userId).order("saved_at", { ascending: false }).limit(50),
+  ]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const saved = (savedRes.data ?? []).map((r: any) => ({ ...r, source: r.tags?.[0] ?? null }));
+  return {
+    liked: [...(likedRes.data ?? []), ...saved] as TasteCard[],
+    disliked: (dislikedRes.data ?? []) as TasteCard[],
+  };
+}
+
+function buildTasteVector(cards: TasteCard[]): TasteVector | null {
+  if (!cards.length) return null;
+  const gt: Record<string, number> = {};
+  const co: Record<string, number> = {};
+  const fa: Record<string, number> = {};
+  const em: Record<string, number> = {};
+  const sr: Record<string, number> = {};
+  for (const c of cards) {
+    if (c.garment_type) gt[c.garment_type] = (gt[c.garment_type] ?? 0) + 1;
+    if (c.color)        co[c.color]        = (co[c.color]        ?? 0) + 1;
+    if (c.fabric)       fa[c.fabric]       = (fa[c.fabric]       ?? 0) + 1;
+    for (const e of (c.embellishments ?? [])) em[e] = (em[e] ?? 0) + 1;
+    const reg = c.source ? (SOURCE_STYLE_REGISTER[c.source] ?? null) : null;
+    if (reg && reg !== "mixed") sr[reg] = (sr[reg] ?? 0) + 1;
+  }
+  const n = cards.length;
+  const norm = (r: Record<string, number>) =>
+    Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v / n]));
+  return { garment_types: norm(gt), colors: norm(co), fabrics: norm(fa), embellishments: norm(em), style_registers: norm(sr) };
+}
+
 function expandSearchTerms(terms: string[]): string[] {
   const expanded = [...terms];
   for (const term of terms) {
@@ -204,6 +265,32 @@ function styleRegisterBoost(p: Product, occasion: string): number {
   if (reg === "bridal"       && BRIDAL_OCCASION.test(occasion))       return 500;
   if (reg === "traditional"  && TRADITIONAL_OCCASION.test(occasion))  return 500;
   return 0;
+}
+
+function tasteBoost(p: Product, liked: TasteVector | null, disliked: TasteVector | null): number {
+  let boost = 0;
+  if (liked) {
+    if (p.garment_type) boost += (liked.garment_types[p.garment_type] ?? 0) * 150;
+    if (p.color)        boost += (liked.colors[p.color]               ?? 0) * 80;
+    if (p.fabric)       boost += (liked.fabrics[p.fabric]             ?? 0) * 80;
+    for (const e of (p.embellishments ?? [])) boost += (liked.embellishments[e] ?? 0) * 50;
+    const reg = p.style_register ?? SOURCE_STYLE_REGISTER[p.source] ?? null;
+    if (reg && reg !== "mixed") boost += (liked.style_registers[reg] ?? 0) * 100;
+  }
+  if (disliked) {
+    if (p.garment_type) boost -= (disliked.garment_types[p.garment_type] ?? 0) * 100;
+    if (p.color)        boost -= (disliked.colors[p.color]               ?? 0) * 60;
+    if (p.fabric)       boost -= (disliked.fabrics[p.fabric]             ?? 0) * 60;
+    for (const e of (p.embellishments ?? [])) boost -= (disliked.embellishments[e] ?? 0) * 40;
+    const reg = p.style_register ?? SOURCE_STYLE_REGISTER[p.source] ?? null;
+    if (reg && reg !== "mixed") boost -= (disliked.style_registers[reg] ?? 0) * 80;
+  }
+  return Math.max(-200, Math.min(boost, 300));
+}
+
+function globalPopularityBoost(p: Product): number {
+  const net = (p.like_count ?? 0) - (p.dislike_count ?? 0);
+  return Math.max(-150, Math.min(net * 2, 150));
 }
 
 function isSetProduct(p: Product): boolean {
@@ -380,6 +467,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const occasion: string = body.occasion ?? "";
   const userGender: string | undefined = body.gender;
+  const userId: string | undefined = body.userId;
 
   if (!occasion) {
     return NextResponse.json(
@@ -492,7 +580,11 @@ export async function POST(req: NextRequest) {
 
   dbQuery = dbQuery.limit(90);
 
-  const { data, error } = await dbQuery;
+  // Run taste profile fetch in parallel with main products query — zero latency overhead
+  const [{ data, error }, tasteData] = await Promise.all([
+    dbQuery,
+    userId ? fetchTasteCards(userId) : Promise.resolve({ liked: [], disliked: [] }),
+  ]);
 
   if (error) {
     return NextResponse.json(
@@ -520,9 +612,13 @@ export async function POST(req: NextRequest) {
   const filtered = (data as Product[]).filter(passesGender);
   // Expand with craft/regional aliases so "mirror work" also boosts titles saying "shisha"
   const searchTerms = expandSearchTerms([...parsed.embellishments, ...parsed.keywords]);
+  const likedVector   = buildTasteVector(tasteData.liked);
+  const dislikedVector = buildTasteVector(tasteData.disliked);
   const sortByRelevance = (a: Product, b: Product) =>
-    (rankScore(b) + titleRelevanceBonus(b, searchTerms) + styleRegisterBoost(b, occasion)) -
-    (rankScore(a) + titleRelevanceBonus(a, searchTerms) + styleRegisterBoost(a, occasion));
+    (rankScore(b) + titleRelevanceBonus(b, searchTerms) + styleRegisterBoost(b, occasion)
+      + tasteBoost(b, likedVector, dislikedVector) + globalPopularityBoost(b)) -
+    (rankScore(a) + titleRelevanceBonus(a, searchTerms) + styleRegisterBoost(a, occasion)
+      + tasteBoost(a, likedVector, dislikedVector) + globalPopularityBoost(a));
 
   let deduped = deduplicateProducts(filtered).sort(sortByRelevance);
 
