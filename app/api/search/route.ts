@@ -172,13 +172,13 @@ async function fetchTasteCards(userId: string): Promise<{ liked: TasteCard[]; di
   const [likedRes, dislikedRes, savedRes] = await Promise.all([
     supabase.from("liked_outfits")
       .select("garment_type,color,fabric,embellishments,source")
-      .eq("user_id", userId).order("liked_at", { ascending: false }).limit(50),
+      .eq("user_id", userId).order("liked_at", { ascending: false }).limit(200),
     supabase.from("disliked_outfits")
       .select("garment_type,color,fabric,embellishments,source")
       .eq("user_id", userId).order("disliked_at", { ascending: false }).limit(50),
     supabase.from("saved_outfits")
       .select("garment_type,color,fabric,embellishments,tags")
-      .eq("user_id", userId).order("saved_at", { ascending: false }).limit(50),
+      .eq("user_id", userId).order("saved_at", { ascending: false }).limit(200),
   ]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const saved = (savedRes.data ?? []).map((r: any) => ({ ...r, source: r.tags?.[0] ?? null }));
