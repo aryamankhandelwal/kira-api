@@ -277,21 +277,14 @@ export async function POST(req: NextRequest) {
     dbQuery = dbQuery.gte("price", parsed.min_price);
   }
 
-  const FALLBACK_FEMALE = ["lehenga", "anarkali", "saree", "salwar", "sharara", "gown"];
-  const FALLBACK_MALE   = ["sherwani", "kurta", "bandhgala", "pathani"];
-  const FALLBACK_ALL    = [...FALLBACK_FEMALE, ...FALLBACK_MALE];
-
-  let effectiveGarments = parsed.garment_types;
-  if (effectiveGarments.length === 0) {
-    effectiveGarments = effectiveUserGender === "male" ? FALLBACK_MALE
-                      : effectiveUserGender === "female" ? FALLBACK_FEMALE
-                      : FALLBACK_ALL;
+  if (parsed.garment_types.length > 0) {
+    const orParts = parsed.garment_types
+      .flatMap((t) => [`garment_type.eq.${t}`, `title.ilike.%${t}%`])
+      .join(",");
+    dbQuery = dbQuery.or(orParts);
+  } else if (parsed.keywords.length > 0) {
+    dbQuery = dbQuery.ilike("title", `%${parsed.keywords[0]}%`);
   }
-
-  const orParts = effectiveGarments
-    .flatMap((t) => [`garment_type.eq.${t}`, `title.ilike.%${t}%`])
-    .join(",");
-  dbQuery = dbQuery.or(orParts);
 
   if (parsed.colors.length > 0) {
     dbQuery = dbQuery.in("color", parsed.colors);
