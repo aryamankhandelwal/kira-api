@@ -538,18 +538,24 @@ export async function POST(req: NextRequest) {
   }
 
   // Garment/keyword filter — OR across garment_type column AND title text
-  if (parsed.garment_types.length > 0) {
-    // Match either the garment_type column OR the title text for each type
-    const orParts = parsed.garment_types
-      .flatMap((t) => [`garment_type.eq.${t}`, `title.ilike.%${t}%`])
-      .join(",");
-    dbQuery = dbQuery.or(orParts);
-  } else if (parsed.keywords.length > 0) {
-    // Keywords are words that actually appear in product titles (e.g. "silk", "embroidered")
-    dbQuery = dbQuery.ilike("title", `%${parsed.keywords[0]}%`);
+  // Fallback: if Gemini returned no garment types, inject broad defaults so we
+  // don't fall through to a useless keyword search like title.ilike.%wedding guest%
+  const FALLBACK_FEMALE = ["lehenga", "anarkali", "saree", "salwar", "sharara", "gown"];
+  const FALLBACK_MALE   = ["sherwani", "kurta", "bandhgala", "pathani"];
+  const FALLBACK_ALL    = [...FALLBACK_FEMALE, ...FALLBACK_MALE];
+
+  let effectiveGarments = parsed.garment_types;
+  if (effectiveGarments.length === 0) {
+    // Use broad garment fallback based on gender
+    effectiveGarments = effectiveUserGender === "male" ? FALLBACK_MALE
+                      : effectiveUserGender === "female" ? FALLBACK_FEMALE
+                      : FALLBACK_ALL;
   }
-  // If neither — occasion was mapped to nothing useful — return broad results
-  // filtered only by price/color/fabric and gender (handled below)
+
+  const orParts = effectiveGarments
+    .flatMap((t) => [`garment_type.eq.${t}`, `title.ilike.%${t}%`])
+    .join(",");
+  dbQuery = dbQuery.or(orParts);
 
   // Color filter — only apply when color is explicit (don't narrow unnecessarily)
   if (parsed.colors.length > 0) {
