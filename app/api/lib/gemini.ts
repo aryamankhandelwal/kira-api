@@ -212,6 +212,21 @@ Apply ALL cultural and styling rules:
 - Price clues: "under 10k"→max_price:10000, "budget"→max_price:5000, "luxury"→min_price:20000
 - Aesthetic/setting words → colors + fabrics (additive, on top of occasion logic): "sunset/golden hour"→terracotta+rust+coral+amber+saffron+peach+gold+georgette/chiffon; "garden party/spring"→blush+mint+lavender+peach+ivory+organza; "beach/coastal"→aqua+turquoise+sky blue+coral+linen; "night/midnight"→black+navy+plum+silver+gold+velvet; "old money/quiet luxury"→ivory+champagne+camel+silk+NO embellishments; "bohemian/earthy"→ochre+rust+olive+cotton/khadi+block print or thread work; "disco/Y2K"→fuchsia+silver+gold+sequins; "pastel/dreamy"→blush+lavender+mint+powder blue+organza; "royal/regal"→royal blue+burgundy+gold+velvet; "winter/festive red"→red+maroon+burgundy+velvet`;
 
+/**
+ * Robustly extracts a JSON object from a model response that may include
+ * thinking tokens, markdown fences, or other leading/trailing text.
+ * Finds the outermost { ... } block and parses that.
+ */
+function extractJson(text: string): unknown {
+  // Try to find the outermost JSON object
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error(`No JSON object found in response: ${text.slice(0, 200)}`);
+  }
+  return JSON.parse(text.slice(start, end + 1));
+}
+
 export async function generateSearchInit(occasion: string, gender?: string): Promise<SearchInitResult> {
   try {
     const model = genAI.getGenerativeModel({
@@ -221,8 +236,7 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
 
     const result = await model.generateContent(INIT_PROMPT_TEMPLATE(occasion, gender));
     const text = result.response.text().trim();
-    const json = text.replace(/^```(?:json)?\n?|\n?```$/g, "").trim();
-    const raw = JSON.parse(json);
+    const raw = extractJson(text);
 
     // Sanitise parsed
     const rp = raw.parsed ?? {};
@@ -242,7 +256,8 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
       }));
 
     return { questions: sanitisedQuestions, parsed: sanitisedParsed };
-  } catch {
+  } catch (e) {
+    console.error("[gemini] generateSearchInit failed:", e instanceof Error ? e.message : String(e));
     return { questions: [], parsed: { ...EMPTY_PARSED, keywords: [occasion] } };
   }
 }
@@ -281,14 +296,12 @@ export async function parseSearchQuery(occasion: string, gender?: string): Promi
 
     const result = await model.generateContent(USER_PROMPT_TEMPLATE(occasion, gender));
     const text = result.response.text().trim();
-
-    // Strip markdown code fences if present
-    const json = text.replace(/^```(?:json)?\n?|\n?```$/g, "").trim();
-    const parsed = JSON.parse(json) as ParsedQuery;
+    const parsed = extractJson(text) as ParsedQuery;
 
     // Sanitise: ensure arrays are arrays, values are in valid sets
     return sanitiseParsed(parsed);
-  } catch {
+  } catch (e) {
+    console.error("[gemini] parseSearchQuery failed:", e instanceof Error ? e.message : String(e));
     // On any failure, fall back to empty — route.ts will use keyword search
     return { ...EMPTY_PARSED, keywords: [occasion] };
   }

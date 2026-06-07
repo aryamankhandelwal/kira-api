@@ -545,8 +545,42 @@ export async function POST(req: NextRequest) {
       .join(",");
     dbQuery = dbQuery.or(orParts);
   } else if (parsed.keywords.length > 0) {
-    // Keywords are words that actually appear in product titles (e.g. "silk", "embroidered")
-    dbQuery = dbQuery.ilike("title", `%${parsed.keywords[0]}%`);
+    // When Gemini fails, keywords[0] is the full occasion phrase (e.g. "wedding guest outfit").
+    // An ILIKE on a multi-word phrase won't match any product title.
+    // Try each word against our hardcoded occasion→garment map first; otherwise
+    // fall back to a per-word OR so at least one meaningful word matches.
+    const kwWords = parsed.keywords[0].toLowerCase().split(/\s+/);
+    const OCCASION_GARMENTS: Record<string, string[]> = {
+      wedding: ["lehenga", "anarkali", "salwar"],
+      bride: ["lehenga"],
+      bridal: ["lehenga"],
+      sangeet: ["lehenga", "sharara", "anarkali"],
+      reception: ["lehenga", "gown", "saree"],
+      engagement: ["lehenga", "anarkali"],
+      mehndi: ["anarkali", "salwar"],
+      mehendi: ["anarkali", "salwar"],
+      haldi: ["salwar", "kurti"],
+      cocktail: ["gown", "lehenga", "anarkali"],
+      party: ["anarkali", "lehenga", "gown"],
+      diwali: ["anarkali", "salwar", "lehenga"],
+      eid: ["anarkali", "salwar"],
+      festive: ["anarkali", "salwar"],
+      puja: ["salwar", "saree", "kurta"],
+      temple: ["salwar", "saree"],
+      casual: ["kurta", "salwar", "kurti"],
+      office: ["kurta", "suit", "salwar"],
+      formal: ["kurta", "suit", "sherwani"],
+    };
+    const fallbackGarments = [...new Set(kwWords.flatMap(w => OCCASION_GARMENTS[w] ?? []))];
+    if (fallbackGarments.length > 0) {
+      const orParts = fallbackGarments
+        .flatMap((t) => [`garment_type.eq.${t}`, `title.ilike.%${t}%`])
+        .join(",");
+      dbQuery = dbQuery.or(orParts);
+    } else {
+      // Single meaningful keyword — use ILIKE on first word only
+      dbQuery = dbQuery.ilike("title", `%${kwWords[0]}%`);
+    }
   }
   // If neither — occasion was mapped to nothing useful — return broad results
   // filtered only by price/color/fabric and gender (handled below)
