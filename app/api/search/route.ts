@@ -551,9 +551,12 @@ export async function POST(req: NextRequest) {
   // If neither — occasion was mapped to nothing useful — return broad results
   // filtered only by price/color/fabric and gender (handled below)
 
-  // Color filter — only apply when color is explicit (don't narrow unnecessarily)
+  // Color filter — also include null-color products (scraper didn't classify them).
+  // SQL IN never matches NULL, so .in() alone silently excludes unclassified products,
+  // which causes empty results when Gemini infers a color and most products have no color set.
+  // Completeness score de-prioritises unclassified products in ranking.
   if (parsed.colors.length > 0) {
-    dbQuery = dbQuery.in("color", parsed.colors);
+    dbQuery = dbQuery.or(`color.in.(${parsed.colors.join(",")}),color.is.null`);
   }
 
   // Fabric filter — also include null-fabric products (scraper didn't classify them).
