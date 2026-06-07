@@ -236,6 +236,7 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
 
     const result = await model.generateContent(INIT_PROMPT_TEMPLATE(occasion, gender));
     const text = result.response.text().trim();
+    console.log("[gemini] init raw response (first 300):", text.slice(0, 300));
     const raw = extractJson(text);
 
     // Sanitise parsed
