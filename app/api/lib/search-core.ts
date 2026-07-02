@@ -3,6 +3,13 @@
 // query building, cascade relaxation, gender/size filtering.
 import { createClient } from "@supabase/supabase-js";
 import { classifyProduct } from "./classifier";
+import {
+  ExplicitFlags,
+  expandColors,
+  textMatchesColor,
+  textMatchesEmbellishment,
+  textMatchesGarment,
+} from "./deterministic-parse";
 import { ParsedQuery } from "./gemini";
 
 export const supabase = createClient(
@@ -123,11 +130,6 @@ export function completenessScore(p: Product): number {
 }
 function embellishmentScore(p: Product): number {
   return Math.min((p.embellishments ?? []).length, 3);
-}
-export function rankScore(p: Product): number {
-  return (sourceTier(p.source) * 1000) +
-         (completenessScore(p) * 3) +
-         (embellishmentScore(p) * 2);
 }
 
 /**
@@ -255,7 +257,9 @@ export function titleRelevanceBonus(p: Product, terms: string[]): number {
     const isProminent = /\b(heavy|all[- ]over|dense|full|rich|intricate|elaborate|pure|extensive)\b/.test(beforeTerm);
     if (isProminent) bonus += 2;
   }
-  return Math.max(0, Math.min(bonus, 7));
+  // Signed: accent-only mentions ("... with mirror work") go negative so
+  // scoreProduct can demote them below products featuring the craft.
+  return Math.max(-7, Math.min(bonus, 7));
 }
 
 const CONTEMPORARY_OCCASION = /\bengagement\b|\bcocktail\b|\bparty\b|\bsangeet\b|\breception\b|\bmehendi\b|\bmodern\b|\bcontemporary\b|\bfusion\b/i;
@@ -265,36 +269,172 @@ const TRADITIONAL_OCCASION  = /\bpuja\b|\btemple\b|\btraditional\b|\bclassic\b/i
 export function styleRegisterBoost(p: Product, occasion: string): number {
   const reg = p.style_register ?? SOURCE_STYLE_REGISTER[p.source];
   if (!reg || reg === "mixed") return 0;
-  if (reg === "contemporary" && CONTEMPORARY_OCCASION.test(occasion)) return 500;
-  if (reg === "bridal"       && BRIDAL_OCCASION.test(occasion))       return 500;
-  if (reg === "traditional"  && TRADITIONAL_OCCASION.test(occasion))  return 500;
+  if (reg === "contemporary" && CONTEMPORARY_OCCASION.test(occasion)) return 140;
+  if (reg === "bridal"       && BRIDAL_OCCASION.test(occasion))       return 140;
+  if (reg === "traditional"  && TRADITIONAL_OCCASION.test(occasion))  return 140;
   return 0;
 }
 
 export function tasteBoost(p: Product, liked: TasteVector | null, disliked: TasteVector | null): number {
   let boost = 0;
   if (liked) {
-    if (p.garment_type) boost += (liked.garment_types[p.garment_type] ?? 0) * 150;
-    if (p.color)        boost += (liked.colors[p.color]               ?? 0) * 80;
-    if (p.fabric)       boost += (liked.fabrics[p.fabric]             ?? 0) * 80;
-    for (const e of (p.embellishments ?? [])) boost += (liked.embellishments[e] ?? 0) * 50;
+    if (p.garment_type) boost += (liked.garment_types[p.garment_type] ?? 0) * 75;
+    if (p.color)        boost += (liked.colors[p.color]               ?? 0) * 40;
+    if (p.fabric)       boost += (liked.fabrics[p.fabric]             ?? 0) * 40;
+    for (const e of (p.embellishments ?? [])) boost += (liked.embellishments[e] ?? 0) * 25;
     const reg = p.style_register ?? SOURCE_STYLE_REGISTER[p.source] ?? null;
-    if (reg && reg !== "mixed") boost += (liked.style_registers[reg] ?? 0) * 100;
+    if (reg && reg !== "mixed") boost += (liked.style_registers[reg] ?? 0) * 50;
   }
   if (disliked) {
-    if (p.garment_type) boost -= (disliked.garment_types[p.garment_type] ?? 0) * 100;
-    if (p.color)        boost -= (disliked.colors[p.color]               ?? 0) * 60;
-    if (p.fabric)       boost -= (disliked.fabrics[p.fabric]             ?? 0) * 60;
-    for (const e of (p.embellishments ?? [])) boost -= (disliked.embellishments[e] ?? 0) * 40;
+    if (p.garment_type) boost -= (disliked.garment_types[p.garment_type] ?? 0) * 50;
+    if (p.color)        boost -= (disliked.colors[p.color]               ?? 0) * 30;
+    if (p.fabric)       boost -= (disliked.fabrics[p.fabric]             ?? 0) * 30;
+    for (const e of (p.embellishments ?? [])) boost -= (disliked.embellishments[e] ?? 0) * 20;
     const reg = p.style_register ?? SOURCE_STYLE_REGISTER[p.source] ?? null;
-    if (reg && reg !== "mixed") boost -= (disliked.style_registers[reg] ?? 0) * 80;
+    if (reg && reg !== "mixed") boost -= (disliked.style_registers[reg] ?? 0) * 40;
   }
-  return Math.max(-200, Math.min(boost, 300));
+  return Math.max(-120, Math.min(boost, 160));
 }
 
 export function globalPopularityBoost(p: Product): number {
   const net = (p.like_count ?? 0) - (p.dislike_count ?? 0);
-  return Math.max(-150, Math.min(net * 2, 150));
+  return Math.max(-60, Math.min(net * 2, 60));
+}
+
+// ── Relevance-first scoring ────────────────────────────────────────────
+// Query-match signals dominate (an exact craft+garment+palette match scores
+// ~1,100); vibe/taste signals sit in the low hundreds; brand tier is a
+// 0–60 tiebreaker. A tier-4 designer piece that ignores the query can never
+// outrank an exact match from a mass-market source.
+
+export interface ScoreContext {
+  parsed: ParsedQuery;
+  /** parsed.embellishments + keywords, expanded with craft aliases. */
+  searchTerms: string[];
+  occasion: string;
+  likedVector: TasteVector | null;
+  dislikedVector: TasteVector | null;
+}
+
+export function scoreProduct(p: Product, ctx: ScoreContext): number {
+  const { parsed } = ctx;
+  let score = 0;
+
+  // Requested embellishments — the query's soul when present
+  if (parsed.embellishments.length > 0) {
+    let columnPoints = 0;
+    let titleOnlyHit = false;
+    for (const e of parsed.embellishments) {
+      const inColumn = (p.embellishments ?? []).includes(e);
+      const inTitle = textMatchesEmbellishment(p.title, e);
+      if (inColumn) {
+        columnPoints += 400;
+        if (inTitle) score += 50; // corroborated by the title
+      } else if (inTitle) {
+        titleOnlyHit = true; // untagged row — title is the only evidence
+      }
+    }
+    score += Math.min(columnPoints, 500);
+    if (titleOnlyHit) score += 250;
+  }
+
+  // Title prominence — keeps the "with mirror work" accent demotion, at scale
+  score += titleRelevanceBonus(p, ctx.searchTerms) * 20;
+
+  // Garment type — column beats substring
+  if (parsed.garment_types.length > 0) {
+    if (p.garment_type != null && parsed.garment_types.includes(p.garment_type)) {
+      score += 250;
+    } else if (parsed.garment_types.some(g => textMatchesGarment(p.title, g))) {
+      score += 100;
+    }
+  }
+
+  // Color vs requested palette — palette actually shapes ranking now
+  if (parsed.colors.length > 0) {
+    if (p.color != null && parsed.colors.includes(p.color)) {
+      score += 220;
+    } else if (parsed.colors.some(c => textMatchesColor(p.title, c))) {
+      score += 90;  // palette color in title (column missing or first-match-off)
+    } else if (p.color == null) {
+      score -= 120; // unknown color ranks below matches, above conflicts
+    } else {
+      score -= 250; // a black lehenga sinks on a sunset query
+    }
+  }
+
+  // Fabric — soft signal
+  if (parsed.fabrics.length > 0 && p.fabric != null) {
+    score += parsed.fabrics.includes(p.fabric) ? 70 : -50;
+  }
+
+  score += styleRegisterBoost(p, ctx.occasion);
+  score += tasteBoost(p, ctx.likedVector, ctx.dislikedVector);
+  score += globalPopularityBoost(p);
+
+  // Micro tiebreakers
+  score += completenessScore(p) * 3;
+  score += embellishmentScore(p) * 2;
+  score += sourceTier(p.source) * 15;
+
+  return score;
+}
+
+/**
+ * Word-boundary garment check killing ILIKE substring false positives —
+ * "suit" matching "jumpsuit", a drape dress passing a lehenga query.
+ * Keeps rows whose garment_type column matches OR whose title mentions a
+ * requested garment under any regional spelling (sari, chaniya choli, …).
+ */
+export function postFilterGarment(products: Product[], garmentTypes: string[]): Product[] {
+  if (garmentTypes.length === 0) return products;
+  return products.filter(p =>
+    (p.garment_type != null && garmentTypes.includes(p.garment_type)) ||
+    garmentTypes.some(g => textMatchesGarment(p.title, g))
+  );
+}
+
+/**
+ * Brand diversity guard: never more than `maxRun` consecutive cards from one
+ * source. Items breaking a run are deferred and re-emitted as soon as the
+ * source changes (they keep outranking everything below them).
+ */
+export function diversify(products: Product[], maxRun = 2): Product[] {
+  const result: Product[] = [];
+  const deferred: Product[] = [];
+
+  const runSource = (): string | null => {
+    if (result.length < maxRun) return null;
+    const s = result[result.length - 1].source;
+    for (let i = result.length - maxRun; i < result.length; i++) {
+      if (result[i].source !== s) return null;
+    }
+    return s;
+  };
+
+  const flushDeferred = () => {
+    let emitted = true;
+    while (emitted) {
+      emitted = false;
+      const blocked = runSource();
+      const i = deferred.findIndex(d => d.source !== blocked);
+      if (i !== -1) {
+        result.push(deferred.splice(i, 1)[0]);
+        emitted = true;
+      }
+    }
+  };
+
+  for (const p of products) {
+    flushDeferred(); // deferred items rank higher — emit them first when allowed
+    if (p.source === runSource()) {
+      deferred.push(p);
+    } else {
+      result.push(p);
+    }
+  }
+  flushDeferred();
+  return [...result, ...deferred];
 }
 
 function isSetProduct(p: Product): boolean {
@@ -412,7 +552,7 @@ function embellishmentOrParts(embellishments: string[]): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function buildProductQuery(parsed: ParsedQuery): any {
+export function buildProductQuery(parsed: ParsedQuery, limit = 90): any {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let dbQuery: any = supabase.from("products").select("*");
 
@@ -462,7 +602,7 @@ export function buildProductQuery(parsed: ParsedQuery): any {
     dbQuery = dbQuery.or(embellishmentOrParts(parsed.embellishments));
   }
 
-  return dbQuery.limit(90);
+  return dbQuery.limit(limit);
 }
 
 // ── Pipeline ───────────────────────────────────────────────────────────
@@ -471,6 +611,8 @@ export interface PipelineParams {
   parsed: ParsedQuery;
   /** Text used for style-register occasion matching (the raw search, or the refinement text). */
   occasion: string;
+  /** Constraints the user literally typed — enforced strictly, never relaxed. */
+  explicit: ExplicitFlags;
   /** Explicit profile gender, falling back to parsed.gender_hint upstream. */
   effectiveUserGender?: string;
   /** Supabase user id — enables taste boosts when present. */
@@ -480,22 +622,33 @@ export interface PipelineParams {
 }
 
 export interface PipelineResult {
-  cards: OutfitCard[];
+  cards: (OutfitCard & { fill?: boolean })[];
   total: number;
 }
 
+/** Sort products with the user's size explicitly listed first, drop known-unavailable. */
+function applySizeFilter(products: Product[], userSize: string | undefined): Product[] {
+  if (!userSize) return products;
+  return products
+    .filter((p) =>
+      !p.available_sizes?.length ||
+      p.available_sizes.map((s: string) => s.toUpperCase()).includes(userSize)
+    )
+    .sort((a, b) => {
+      const aHas = a.available_sizes?.map((s: string) => s.toUpperCase()).includes(userSize) ? 0 : 1;
+      const bHas = b.available_sizes?.map((s: string) => s.toUpperCase()).includes(userSize) ? 0 : 1;
+      return aHas - bHas;
+    });
+}
+
 export async function runSearchPipeline(params: PipelineParams): Promise<PipelineResult> {
-  const { parsed, occasion, effectiveUserGender, userId, userSize } = params;
+  const { occasion, explicit, effectiveUserGender, userId, userSize } = params;
 
-  // Run taste profile fetch in parallel with main products query — zero latency overhead
-  const [{ data, error }, tasteData] = await Promise.all([
-    buildProductQuery(parsed),
-    userId ? fetchTasteCards(userId) : Promise.resolve({ liked: [], disliked: [] }),
-  ]);
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  // Explicitly-named garments are exclusive: "mirror work lehenga" means
+  // lehengas ONLY — not the anarkalis/shararas Gemini adds for the occasion.
+  const parsed: ParsedQuery = explicit.garments.length > 0
+    ? { ...params.parsed, garment_types: explicit.garments }
+    : params.parsed;
 
   // ── Gender filter (post-fetch, using classifier) ─────────────────
   const passesGender = (p: Product): boolean => {
@@ -512,60 +665,99 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
     return true;
   };
 
-  const filtered = (data as Product[]).filter(passesGender);
-  // Expand with craft/regional aliases so "mirror work" also boosts titles saying "shisha"
+  // Gender + word-boundary garment check, applied to every fetch
+  const cleanBatch = (rows: Product[] | null): Product[] =>
+    postFilterGarment((rows ?? []).filter(passesGender), parsed.garment_types);
+
+  // ── Stage 0: all filters, taste profile fetched in parallel ───────
+  const [{ data, error }, tasteData] = await Promise.all([
+    buildProductQuery(parsed),
+    userId ? fetchTasteCards(userId) : Promise.resolve({ liked: [], disliked: [] }),
+  ]);
+  if (error) throw new Error(error.message);
+
+  let pool = deduplicateProducts(cleanBatch(data as Product[]));
+  const stageCounts = [pool.length];
+
+  const mergeBatch = (rows: Product[] | null) => {
+    const existingIds = new Set(pool.map(p => p.id));
+    const additional = cleanBatch(rows).filter(p => !existingIds.has(p.id));
+    pool = deduplicateProducts([...pool, ...additional]);
+  };
+
+  // ── Cascade: staged relaxation of INFERRED constraints only ───────
+  // Never dropped: price, explicit garments, explicit embellishments.
+  // Stage 1 (<20 results): drop inferred colors + all fabrics — recovers
+  // products with undetected or non-matching color/fabric metadata.
+  const explicitColorSet = new Set(expandColors(explicit.colors));
+  const stage1: ParsedQuery = {
+    ...parsed,
+    colors: parsed.colors.filter(c => explicitColorSet.has(c)),
+    fabrics: [],
+  };
+  const stage1Differs = stage1.colors.length !== parsed.colors.length || parsed.fabrics.length > 0;
+  if (pool.length < 20 && stage1Differs) {
+    const { data: s1 } = await buildProductQuery(stage1, 60);
+    mergeBatch(s1 as Product[]);
+  }
+  stageCounts.push(pool.length);
+
+  // Stage 2 (<10 results): additionally drop inferred embellishments.
+  const stage2: ParsedQuery = {
+    ...stage1,
+    embellishments: parsed.embellishments.filter(e => explicit.embellishments.includes(e)),
+  };
+  if (pool.length < 10 && stage2.embellishments.length !== parsed.embellishments.length) {
+    const { data: s2 } = await buildProductQuery(stage2, 60);
+    mergeBatch(s2 as Product[]);
+  }
+  stageCounts.push(pool.length);
+
+  // ── Score & sort (always against the ORIGINAL parsed query — relaxation
+  // affects recall only; ranking still rewards the full vibe) ─────────
   const searchTerms = expandSearchTerms([...parsed.embellishments, ...parsed.keywords]);
-  const likedVector    = buildTasteVector(tasteData.liked);
-  const dislikedVector = buildTasteVector(tasteData.disliked);
-  const sortByRelevance = (a: Product, b: Product) =>
-    (rankScore(b) + titleRelevanceBonus(b, searchTerms) + styleRegisterBoost(b, occasion)
-      + tasteBoost(b, likedVector, dislikedVector) + globalPopularityBoost(b)) -
-    (rankScore(a) + titleRelevanceBonus(a, searchTerms) + styleRegisterBoost(a, occasion)
-      + tasteBoost(a, likedVector, dislikedVector) + globalPopularityBoost(a));
+  const ctx: ScoreContext = {
+    parsed,
+    searchTerms,
+    occasion,
+    likedVector: buildTasteVector(tasteData.liked),
+    dislikedVector: buildTasteVector(tasteData.disliked),
+  };
+  const byScore = (a: Product, b: Product) => scoreProduct(b, ctx) - scoreProduct(a, ctx);
+  pool.sort(byScore);
 
-  let deduped = deduplicateProducts(filtered).sort(sortByRelevance);
-
-  // ── Cascade: relax fabric+color when specific filters over-narrow results ─────
-  // Fires when: embellishments were specified AND fewer than 20 results survive dedup.
-  // PRESERVES garment_type — "mirror work saree" must stay sarees, not return lehengas.
-  // Drops only fabric + color (Gemini-inferred from occasion, not user-specified) to
-  // recover products with undetected or non-matching fabric/color metadata.
-  if (deduped.length < 20 && parsed.embellishments.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let fallback: any = supabase.from("products").select("*");
-    if (parsed.max_price != null) fallback = fallback.lte("price", parsed.max_price);
-    if (parsed.min_price != null) fallback = fallback.gte("price", parsed.min_price);
-
-    // Keep garment_type — user may have specified this explicitly (e.g. "mirror work saree")
-    if (parsed.garment_types.length > 0) {
-      fallback = fallback.or(garmentOrParts(parsed.garment_types));
-    }
-
-    const { data: fallbackData } = await fallback.or(embellishmentOrParts(parsed.embellishments)).limit(60);
-    if (fallbackData) {
-      const existingIds = new Set(deduped.map(p => p.id));
-      const additional = (fallbackData as Product[])
-        .filter(passesGender)
-        .filter(p => !existingIds.has(p.id));
-      deduped = deduplicateProducts([...deduped, ...additional]).sort(sortByRelevance);
-    }
+  // ── Labeled fill: explicit craft ran short → append near-matches ──
+  // Same garment + price + palette, embellishment constraint dropped. Fill
+  // items always sort after every exact match and are flagged for the client.
+  let fillPool: Product[] = [];
+  if (explicit.embellishments.length > 0 && pool.length < 20) {
+    const fillParsed: ParsedQuery = { ...parsed, embellishments: [] };
+    const { data: fillData } = await buildProductQuery(fillParsed, 60);
+    const poolIds = new Set(pool.map(p => p.id));
+    fillPool = deduplicateProducts(cleanBatch(fillData as Product[]).filter(p => !poolIds.has(p.id)))
+      .sort(byScore);
   }
 
-  // ── Size filter (post-fetch) ──────────────────────────────────────
-  const sized = userSize
-    ? deduped
-        .filter((p) =>
-          !p.available_sizes?.length ||
-          p.available_sizes.map((s: string) => s.toUpperCase()).includes(userSize)
-        )
-        .sort((a, b) => {
-          // Products with the user's size explicitly listed rank first
-          const aHas = a.available_sizes?.map((s: string) => s.toUpperCase()).includes(userSize) ? 0 : 1;
-          const bHas = b.available_sizes?.map((s: string) => s.toUpperCase()).includes(userSize) ? 0 : 1;
-          return aHas - bHas;
-        })
-    : deduped;
+  // ── Diversity guard + size filter, exact and fill kept separate ───
+  const exact = applySizeFilter(diversify(pool), userSize);
+  const fill  = applySizeFilter(diversify(fillPool), userSize);
 
-  const cards = sized.map(toOutfitCard);
+  const cards = [
+    ...exact.map(p => toOutfitCard(p)),
+    ...fill.map(p => ({ ...toOutfitCard(p), fill: true })),
+  ];
+
+  console.log("[search-core]", JSON.stringify({
+    occasion,
+    garments: parsed.garment_types,
+    embellishments: parsed.embellishments,
+    colors: parsed.colors.length,
+    max_price: parsed.max_price,
+    explicit,
+    stageCounts,
+    fillCount: fill.length,
+    top5: exact.slice(0, 5).map(p => `${p.source}:${p.title.slice(0, 50)}`),
+  }));
+
   return { cards, total: cards.length };
 }

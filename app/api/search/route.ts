@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deterministicParse, mergeParsed } from "../lib/deterministic-parse";
+import { detectExplicit, deterministicParse, mergeParsed } from "../lib/deterministic-parse";
 import { parseSearchQuery, ParsedQuery, sanitiseParsed } from "../lib/gemini";
 import { Product, runSearchPipeline, supabase, toOutfitCard } from "../lib/search-core";
 
@@ -178,6 +178,7 @@ export async function POST(req: NextRequest) {
     const result = await runSearchPipeline({
       parsed,
       occasion,
+      explicit: detectExplicit(occasion),
       effectiveUserGender,
       userId,
       userSize,

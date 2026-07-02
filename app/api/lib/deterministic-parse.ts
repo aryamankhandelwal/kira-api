@@ -194,6 +194,33 @@ const COLOR_FAMILIES: Record<string, string[]> = {
   nude:   ["beige", "ivory", "cream", "taupe", "camel", "fawn", "ecru"],
 };
 
+// ── Canonical text matchers ────────────────────────────────────────────
+// Used by ranking: does this product TITLE mention the canonical value,
+// under any of its regional/craft spellings? (e.g. "shisha" → mirror work,
+// "sari" → saree, "chaniya choli" → lehenga)
+
+function textMatches(text: string, table: [RegExp, string][], label: string): boolean {
+  return table.some(([re, l]) => l === label && re.test(text));
+}
+
+export function textMatchesGarment(text: string, garment: string): boolean {
+  return textMatches(text, GARMENT_TYPES, garment);
+}
+export function textMatchesColor(text: string, color: string): boolean {
+  return textMatches(text, COLORS, color);
+}
+export function textMatchesFabric(text: string, fabric: string): boolean {
+  return textMatches(text, FABRICS, fabric);
+}
+export function textMatchesEmbellishment(text: string, embellishment: string): boolean {
+  return textMatches(text, EMBELLISHMENTS, embellishment);
+}
+
+/** Expand literal colors with their close shades (mirrors Gemini prompt rule 12). */
+export function expandColors(colors: string[]): string[] {
+  return [...new Set(colors.flatMap(c => [c, ...(COLOR_FAMILIES[c] ?? [])]))];
+}
+
 // ── Price parsing ──────────────────────────────────────────────────────
 
 // "50,000" / "50000" / "50k" / "1.5 lakh" — returns INR amount or null
@@ -294,8 +321,7 @@ export function deterministicParse(occasion: string): ParsedQuery {
   const fabrics = matchAll(occasion, FABRICS);
 
   // Expand literal colors with close shades (recall filter would over-narrow otherwise)
-  const literalColors = matchAll(occasion, COLORS);
-  const colors = [...new Set(literalColors.flatMap(c => [c, ...(COLOR_FAMILIES[c] ?? [])]))];
+  const colors = expandColors(matchAll(occasion, COLORS));
 
   // Only explicit person-words set a hint — garment words (lehenga, sherwani)
   // don't imply the shopper's gender; the profile gender handles that upstream.

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deterministicParse, mergeParsed } from "../lib/deterministic-parse";
+import { detectExplicit, deterministicParse, mergeParsed } from "../lib/deterministic-parse";
 import { ParsedQuery, RefineItem, refineSearchQuery } from "../lib/gemini";
 import { runSearchPipeline } from "../lib/search-core";
 
@@ -34,10 +34,15 @@ export async function POST(req: NextRequest) {
   const userSize = ((body.top_size || body.bottom_size || "") as string).toUpperCase() || undefined;
 
   try {
-    // Use the refinement text as a pseudo-occasion for style register boosting
+    // Use the refinement text as a pseudo-occasion for style register boosting.
+    // Explicitness spans the original occasion (when the client sends it) plus
+    // the refinement — "mirror work lehenga" must stay strict through
+    // "show me cheaper options".
+    const originalOccasion: string | undefined = body.occasion;
     const { cards, total } = await runSearchPipeline({
       parsed,
       occasion: refinement,
+      explicit: detectExplicit([originalOccasion, refinement].filter(Boolean).join(". ")),
       effectiveUserGender,
       userId,
       userSize,
