@@ -120,6 +120,37 @@ export async function POST(req: NextRequest) {
   const sessionToken: string | undefined = body.sessionToken;
   const followUpAnswers: Array<{ question: string; answer: string }> = body.followUpAnswers ?? [];
 
+  // ── orderToken short-circuit: serve a later page of an already-ranked
+  // result set. No Gemini calls, no re-ranking — the LLM re-rank is not
+  // deterministic across runs, so re-running the pipeline per page would
+  // produce duplicates/gaps at page seams. ───────────────────────────
+  const orderToken: string | undefined = body.orderToken;
+  if (orderToken) {
+    try {
+      const token = JSON.parse(Buffer.from(orderToken, "base64").toString("utf8")) as { i: string[]; f: number };
+      if (Array.isArray(token.i) && token.i.every(id => typeof id === "string")) {
+        const fillStart = typeof token.f === "number" ? token.f : token.i.length;
+        const offset = typeof body.offset === "number" ? body.offset : 0;
+        const limit = typeof body.limit === "number" ? body.limit : token.i.length;
+        const sliceIds = token.i.slice(offset, offset + limit);
+
+        const { data, error } = await supabase.from("products").select("*").in("id", sliceIds);
+        if (!error && data) {
+          const byId = new Map((data as Product[]).map(p => [p.id, p]));
+          const cards = sliceIds.flatMap((id, k) => {
+            const p = byId.get(id);
+            if (!p) return []; // product deleted since page 1 — skip
+            const card = toOutfitCard(p);
+            return [offset + k >= fillStart ? { ...card, fill: true } : card];
+          });
+          return NextResponse.json({ ok: true, cards, total: token.i.length, orderToken });
+        }
+      }
+    } catch {
+      // Corrupt token — fall through to the full pipeline
+    }
+  }
+
   // ── Test fixture short-circuit (no Gemini call) ───────────────────
   if (occasion.trim().toLowerCase() === "test prompt") {
     const { data: testData, error: testError } = await supabase
@@ -173,7 +204,7 @@ export async function POST(req: NextRequest) {
   const effectiveUserGender = userGender ?? parsed.gender_hint ?? undefined;
   const userSize = ((body.top_size || body.bottom_size || "") as string).toUpperCase() || undefined;
 
-  let allCards: ReturnType<typeof toOutfitCard>[];
+  let allCards: (ReturnType<typeof toOutfitCard> & { fill?: boolean })[];
   try {
     const result = await runSearchPipeline({
       parsed,
@@ -191,6 +222,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Freeze this ranking into an orderToken so follow-up pages reuse the
+  // exact order (and skip Gemini entirely).
+  const firstFill = allCards.findIndex(c => c.fill === true);
+  const newOrderToken = Buffer.from(JSON.stringify({
+    i: allCards.map(c => c.id),
+    f: firstFill === -1 ? allCards.length : firstFill,
+  })).toString("base64");
+
   // Optional pagination — iOS can request a slice to show first cards sooner.
   // If omitted, the full list is returned (backwards-compatible).
   const limit: number | undefined  = typeof body.limit  === "number" ? body.limit  : undefined;
@@ -200,5 +239,5 @@ export async function POST(req: NextRequest) {
     : allCards;
   const total = allCards.length;
 
-  return NextResponse.json({ ok: true, cards, total, _parsed: parsed });
+  return NextResponse.json({ ok: true, cards, total, _parsed: parsed, orderToken: newOrderToken });
 }

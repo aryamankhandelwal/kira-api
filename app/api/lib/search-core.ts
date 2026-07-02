@@ -11,6 +11,7 @@ import {
   textMatchesGarment,
 } from "./deterministic-parse";
 import { ParsedQuery } from "./gemini";
+import { rerankCandidates } from "./rerank";
 
 export const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -621,6 +622,8 @@ export interface PipelineParams {
   userId?: string;
   /** Uppercased top/bottom size, e.g. "M" — filters + prioritises sized products. */
   userSize?: string;
+  /** Stylist pass: LLM re-rank of the top candidates (default true; fail-open). */
+  rerank?: boolean;
 }
 
 export interface PipelineResult {
@@ -726,7 +729,27 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
     dislikedVector: buildTasteVector(tasteData.disliked),
   };
   const byScore = (a: Product, b: Product) => scoreProduct(b, ctx) - scoreProduct(a, ctx);
-  pool.sort(byScore);
+  const finalScore = new Map(pool.map(p => [p.id, scoreProduct(p, ctx)]));
+  pool.sort((a, b) => finalScore.get(b.id)! - finalScore.get(a.id)!);
+
+  // ── Stylist pass: LLM re-rank of the top candidates ────────────────
+  // Blended at 15× (0–1,500) so the LLM's occasion/vibe judgment dominates
+  // while the heuristic score still separates ties and hedges LLM noise.
+  // Items beyond the re-ranked head can't leapfrog it: they were already
+  // below on heuristic score and the blend only adds points.
+  let rerankStatus = "off";
+  if (params.rerank !== false && pool.length > 1) {
+    const llmScores = await rerankCandidates(occasion, pool.slice(0, 60));
+    if (llmScores) {
+      rerankStatus = "ok";
+      for (const [id, s] of llmScores) {
+        finalScore.set(id, (finalScore.get(id) ?? 0) + 15 * s);
+      }
+      pool.sort((a, b) => finalScore.get(b.id)! - finalScore.get(a.id)!);
+    } else {
+      rerankStatus = "failed";
+    }
+  }
 
   // ── Labeled fill: explicit craft ran short → append near-matches ──
   // Same garment + price + palette, embellishment constraint dropped. Fill
@@ -757,6 +780,7 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
     max_price: parsed.max_price,
     explicit,
     stageCounts,
+    rerankStatus,
     fillCount: fill.length,
     top5: exact.slice(0, 5).map(p => `${p.source}:${p.title.slice(0, 50)}`),
   }));
