@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { deterministicParse, mergeParsed } from "../lib/deterministic-parse";
 import { parseSearchQuery, ParsedQuery, sanitiseParsed } from "../lib/gemini";
 import { Product, runSearchPipeline, supabase, toOutfitCard } from "../lib/search-core";
 
@@ -162,6 +163,11 @@ export async function POST(req: NextRequest) {
       : occasion;
     parsed = await parseSearchQuery(enriched, userGender);
   }
+
+  // Merge with the regex parse of the raw occasion — constraints the user
+  // literally typed (price cap, garment, craft, color) can never be dropped
+  // by a failed or lossy Gemini parse.
+  parsed = mergeParsed(parsed, deterministicParse(occasion));
 
   // Determine effective gender — prefer explicit user profile gender over hint
   const effectiveUserGender = userGender ?? parsed.gender_hint ?? undefined;

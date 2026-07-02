@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { deterministicParse, mergeParsed } from "../lib/deterministic-parse";
 import { ParsedQuery, RefineItem, refineSearchQuery } from "../lib/gemini";
 import { runSearchPipeline } from "../lib/search-core";
 
@@ -23,7 +24,12 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Refine the ParsedQuery via Gemini ─────────────────────────────
-  const parsed = await refineSearchQuery(existingQuery, refinement, currentItem, userGender);
+  // Merge with the regex parse of the refinement text so constraints the
+  // user literally typed survive even if the Gemini refine call fails.
+  const parsed = mergeParsed(
+    await refineSearchQuery(existingQuery, refinement, currentItem, userGender),
+    deterministicParse(refinement)
+  );
   const effectiveUserGender = userGender ?? parsed.gender_hint ?? undefined;
   const userSize = ((body.top_size || body.bottom_size || "") as string).toUpperCase() || undefined;
 

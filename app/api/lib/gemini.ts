@@ -1,6 +1,14 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { deterministicParse } from "./deterministic-parse";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+// JSON mode + temperature 0 — cuts most parse failures (markdown fences,
+// preamble text, nondeterministic drift) at the source.
+const JSON_GENERATION_CONFIG = {
+  responseMimeType: "application/json",
+  temperature: 0,
+};
 
 export interface ParsedQuery {
   garment_types: string[];
@@ -232,6 +240,7 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
       systemInstruction: SYSTEM_PROMPT,
+      generationConfig: JSON_GENERATION_CONFIG,
     });
 
     const result = await model.generateContent(INIT_PROMPT_TEMPLATE(occasion, gender));
@@ -260,7 +269,8 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
     return { questions: sanitisedQuestions, parsed: sanitisedParsed };
   } catch (e) {
     console.error("[gemini] generateSearchInit failed:", e instanceof Error ? e.message : String(e));
-    return { questions: [], parsed: { ...EMPTY_PARSED, keywords: [occasion] } };
+    // Regex fallback — literal constraints (price, garment, craft) still apply
+    return { questions: [], parsed: { ...deterministicParse(occasion), keywords: [occasion] } };
   }
 }
 
@@ -278,22 +288,12 @@ export function sanitiseParsed(raw: any): ParsedQuery {
   };
 }
 
-const EMPTY_PARSED: ParsedQuery = {
-  garment_types: [],
-  colors: [],
-  max_price: null,
-  min_price: null,
-  fabrics: [],
-  embellishments: [],
-  keywords: [],
-  gender_hint: null,
-};
-
 export async function parseSearchQuery(occasion: string, gender?: string): Promise<ParsedQuery> {
   try {
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
       systemInstruction: SYSTEM_PROMPT,
+      generationConfig: JSON_GENERATION_CONFIG,
     });
 
     const result = await model.generateContent(USER_PROMPT_TEMPLATE(occasion, gender));
@@ -304,8 +304,9 @@ export async function parseSearchQuery(occasion: string, gender?: string): Promi
     return sanitiseParsed(parsed);
   } catch (e) {
     console.error("[gemini] parseSearchQuery failed:", e instanceof Error ? e.message : String(e));
-    // On any failure, fall back to empty — route.ts will use keyword search
-    return { ...EMPTY_PARSED, keywords: [occasion] };
+    // Regex fallback — literal constraints (price cap, garment, craft) must
+    // never silently vanish just because the LLM parse failed.
+    return { ...deterministicParse(occasion), keywords: [occasion] };
   }
 }
 
@@ -331,6 +332,7 @@ export async function refineSearchQuery(
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
       systemInstruction: SYSTEM_PROMPT,
+      generationConfig: JSON_GENERATION_CONFIG,
     });
 
     const prompt = `Here are the current search filters for an Indian ethnic wear search:
