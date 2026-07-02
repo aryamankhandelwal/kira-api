@@ -265,7 +265,7 @@ export async function generateSearchInit(occasion: string, gender?: string): Pro
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sanitiseParsed(raw: any): ParsedQuery {
+export function sanitiseParsed(raw: any): ParsedQuery {
   return {
     garment_types: (raw.garment_types ?? []).filter((g: string) => VALID_GARMENTS.includes(g)),
     colors: (raw.colors ?? []).filter((c: string) => VALID_COLORS.includes(c)),

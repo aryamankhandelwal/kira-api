@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSearchInit, ParsedQuery, FollowUpQuestion } from "../lib/gemini";
 
+// Gemini call can exceed Vercel's default 10s function limit.
+export const maxDuration = 25;
+
 const TEST_PARSED: ParsedQuery = {
   garment_types: ["anarkali", "lehenga", "salwar"],
   colors: [],
