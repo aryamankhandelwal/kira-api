@@ -397,7 +397,9 @@ export function postFilterGarment(products: Product[], garmentTypes: string[]): 
 /**
  * Brand diversity guard: never more than `maxRun` consecutive cards from one
  * source. Items breaking a run are deferred and re-emitted as soon as the
- * source changes (they keep outranking everything below them).
+ * source changes (they keep outranking everything below them). When a single
+ * source dominates the pool, its surplus necessarily runs together at the
+ * tail — only the head of the feed can be kept diverse.
  */
 export function diversify(products: Product[], maxRun = 2): Product[] {
   const result: Product[] = [];
