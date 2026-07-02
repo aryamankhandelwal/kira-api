@@ -19,7 +19,31 @@ export interface ParsedQuery {
   embellishments: string[];
   keywords: string[];
   gender_hint: "male" | "female" | null;
+  /** Aesthetic mood tags matched against products' AI image enrichment.
+   *  Optional + additive so old base64 sessionTokens keep decoding. */
+  vibe_tags?: string[];
 }
+
+// SYNC: shauk-scraper/src/lib/enrich.ts AESTHETIC_TAGS — same list, same order.
+// Products carry these in aesthetic_tags (set by the image enrichment run).
+export const VIBE_TAGS = [
+  "pastel-dreamy",
+  "sunset-warm",
+  "jewel-tone",
+  "heavy-bridal",
+  "minimal-modern",
+  "cocktail-shimmer",
+  "boho-earthy",
+  "regal-traditional",
+  "indo-western-fusion",
+  "metallic-glam",
+  "floral-romantic",
+  "monochrome-chic",
+  "festive-bright",
+  "understated-luxury",
+  "beach-resort",
+  "midnight-noir",
+];
 
 // Must match the values stored in the DB (from metadata.ts EMBELLISHMENTS)
 const VALID_EMBELLISHMENTS = [
@@ -89,7 +113,8 @@ Return a JSON object with these exact fields:
   "fabrics": [],         // e.g. ["silk", "georgette", "cotton", "chiffon", "velvet", "tussar", "dupion", "tissue", "art silk", "viscose", "pashmina", "wool"]
   "embellishments": [],  // subset of: [${VALID_EMBELLISHMENTS.join(", ")}]
   "keywords": [],        // only words that would literally appear in a product title
-  "gender_hint": null    // "male", "female", or null — only if explicitly stated
+  "gender_hint": null,   // "male", "female", or null — only if explicitly stated
+  "vibe_tags": []        // 0-3 mood tags, subset of: [${VIBE_TAGS.join(", ")}]
 }
 
 CRITICAL RULES:
@@ -146,7 +171,8 @@ CRITICAL RULES:
     - "printed", "digital print", "screen print" → ["printed"]
     - "floral", "floral print", "flower print" → ["floral"]
     - "striped", "stripes", "stripe" → ["striped"]
-    Style terms NOT in the above list (e.g. "banarasi", "patola", "chanderi", "mul mul") are NOT in embellishments — put them in keywords[] instead so they match product titles via text search.`;
+    Style terms NOT in the above list (e.g. "banarasi", "patola", "chanderi", "mul mul") are NOT in embellishments — put them in keywords[] instead so they match product titles via text search.
+16. VIBE TAGS — pick 0-3 tags that capture the overall mood of the request (products are image-tagged with the same vocabulary). Examples: "sunset"→["sunset-warm"]; "cocktail night"→["cocktail-shimmer"]; engagement/party for a modern shopper→["minimal-modern","cocktail-shimmer"]; bridal→["heavy-bridal"]; haldi/mehndi→["festive-bright"]; "old money"→["understated-luxury","minimal-modern"]; "beach wedding"→["beach-resort"]; pastels→["pastel-dreamy"]. Leave empty for plain functional queries (office, puja, casual).`;
 
 // ── Follow-up questions ──────────────────────────────────────────────
 
@@ -206,7 +232,8 @@ Selection guidance:
   "fabrics": [],
   "embellishments": [],  // subset of: [${VALID_EMBELLISHMENTS.join(", ")}]
   "keywords": [],
-  "gender_hint": null
+  "gender_hint": null,
+  "vibe_tags": []        // 0-3 mood tags, subset of: [${VIBE_TAGS.join(", ")}]
 }
 
 Apply ALL cultural and styling rules:
@@ -285,6 +312,7 @@ export function sanitiseParsed(raw: any): ParsedQuery {
     embellishments: (raw.embellishments ?? []).filter((e: string) => VALID_EMBELLISHMENTS.includes(e)),
     keywords: Array.isArray(raw.keywords) ? raw.keywords : [],
     gender_hint: raw.gender_hint === "male" || raw.gender_hint === "female" ? raw.gender_hint : null,
+    vibe_tags: (raw.vibe_tags ?? []).filter((t: string) => VIBE_TAGS.includes(t)),
   };
 }
 

@@ -393,5 +393,6 @@ export function mergeParsed(gemini: ParsedQuery, det: ParsedQuery): ParsedQuery 
     embellishments: union(gemini.embellishments, det.embellishments),
     keywords: gemini.keywords,
     gender_hint: gemini.gender_hint ?? det.gender_hint,
+    vibe_tags: gemini.vibe_tags ?? [],
   };
 }

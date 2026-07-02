@@ -36,6 +36,12 @@ export interface Product {
   style_register: string | null;
   like_count: number;
   dislike_count: number;
+  // AI image enrichment (null until the scraper's enrich run has seen the row)
+  ai_colors: string[] | null;
+  ai_embellishments: string[] | null;
+  aesthetic_tags: string[] | null;
+  modernity: number | null;
+  ai_description: string | null;
 }
 
 // Sources where the title belongs to a third-party seller — use the platform name as brand
@@ -337,6 +343,10 @@ export function scoreProduct(p: Product, ctx: ScoreContext): number {
     }
     score += Math.min(columnPoints, 500);
     if (titleOnlyHit) score += 250;
+    // Craft verified VISIBLE in the product photo — highest-trust evidence
+    if (parsed.embellishments.some(e => (p.ai_embellishments ?? []).includes(e))) {
+      score += 150;
+    }
   }
 
   // Title prominence — keeps the "with mirror work" accent demotion, at scale
@@ -353,15 +363,30 @@ export function scoreProduct(p: Product, ctx: ScoreContext): number {
 
   // Color vs requested palette — palette actually shapes ranking now
   if (parsed.colors.length > 0) {
-    if (p.color != null && parsed.colors.includes(p.color)) {
+    const aiColors = p.ai_colors ?? [];
+    if (aiColors.some(c => parsed.colors.includes(c))) {
+      score += 250; // AI-verified from the product photo — highest trust
+    } else if (p.color != null && parsed.colors.includes(p.color)) {
       score += 220;
     } else if (parsed.colors.some(c => textMatchesColor(p.title, c))) {
       score += 90;  // palette color in title (column missing or first-match-off)
-    } else if (p.color == null) {
+    } else if (p.color == null && aiColors.length === 0) {
       score -= 120; // unknown color ranks below matches, above conflicts
     } else {
-      score -= 250; // a black lehenga sinks on a sunset query
+      score -= 250; // known color conflicts the palette — sinks
     }
+  }
+
+  // Vibe tags — occasion mood vs the product photo's aesthetic tags
+  const vibeTags = parsed.vibe_tags ?? [];
+  if (vibeTags.length > 0 && p.aesthetic_tags != null) {
+    const matched = vibeTags.filter(t => p.aesthetic_tags!.includes(t)).length;
+    score += Math.min(matched * 120, 240);
+  }
+
+  // Modern pieces get a nudge on contemporary occasions
+  if (p.modernity != null && p.modernity >= 65 && CONTEMPORARY_OCCASION.test(ctx.occasion)) {
+    score += 80;
   }
 
   // Fabric — soft signal
@@ -586,12 +611,15 @@ export function buildProductQuery(parsed: ParsedQuery, limit = 90): any {
   // If neither — occasion was mapped to nothing useful — return broad results
   // filtered only by price/color/fabric and gender (handled post-fetch)
 
-  // Color filter — also include null-color products (scraper didn't classify them).
-  // SQL IN never matches NULL, so .in() alone silently excludes unclassified products,
-  // which causes empty results when Gemini infers a color and most products have no color set.
-  // Completeness score de-prioritises unclassified products in ranking.
+  // Color filter — match the title-derived color column OR the AI-verified
+  // image colors. Products with NEITHER classified still pass (SQL IN never
+  // matches NULL and hard-excluding them would gut recall); ranking
+  // de-prioritises them.
   if (parsed.colors.length > 0) {
-    dbQuery = dbQuery.or(`color.in.(${parsed.colors.join(",")}),color.is.null`);
+    const quoted = parsed.colors.map(c => `"${c}"`).join(",");
+    dbQuery = dbQuery.or(
+      `color.in.(${quoted}),ai_colors.ov.{${quoted}},and(color.is.null,ai_colors.is.null)`
+    );
   }
 
   // Fabric filter — also include null-fabric products (scraper didn't classify them).

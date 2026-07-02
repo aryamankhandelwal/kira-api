@@ -25,8 +25,14 @@ const RERANK_MODEL = "gemini-2.5-flash-lite";
 
 function candidateLine(p: Product, i: number): string {
   const price = p.price != null ? `₹${p.price.toLocaleString("en-IN")}` : "?";
-  const emb = (p.embellishments ?? []).join(", ") || "none";
-  return `${i} | ${p.title} | ${p.source.replace(/_/g, " ")} | ${price} | ${p.garment_type ?? "?"} | ${p.color ?? "?"} | ${p.fabric ?? "?"} | ${emb}`;
+  const emb = [...new Set([...(p.embellishments ?? []), ...(p.ai_embellishments ?? [])])].join(", ") || "none";
+  const colors = p.ai_colors?.length ? p.ai_colors.join("/") : (p.color ?? "?");
+  // AI image enrichment, when present — the model sees what the photo shows
+  const vibe = [
+    p.aesthetic_tags?.length ? p.aesthetic_tags.join(", ") : null,
+    p.ai_description || null,
+  ].filter(Boolean).join(" — ");
+  return `${i} | ${p.title} | ${p.source.replace(/_/g, " ")} | ${price} | ${p.garment_type ?? "?"} | ${colors} | ${p.fabric ?? "?"} | ${emb}${vibe ? ` | ${vibe}` : ""}`;
 }
 
 /**
