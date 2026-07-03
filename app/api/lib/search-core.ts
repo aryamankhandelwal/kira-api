@@ -539,6 +539,25 @@ export function deduplicateProducts(products: Product[]): Product[] {
 
 // ── Query building ─────────────────────────────────────────────────────
 
+// The AI-enrichment columns (migrations/001_enrichment.sql in shauk-scraper)
+// may not exist yet. Probe once per lambda instance and degrade the color
+// filter gracefully so deploys are never gated on the migration.
+let enrichmentProbe: Promise<boolean> | null = null;
+function enrichmentAvailable(): Promise<boolean> {
+  if (!enrichmentProbe) {
+    enrichmentProbe = (async () => {
+      try {
+        const { error } = await supabase.from("products").select("ai_colors").limit(1);
+        if (error) console.warn("[search-core] enrichment columns unavailable:", error.message);
+        return !error;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return enrichmentProbe;
+}
+
 const OCCASION_GARMENTS: Record<string, string[]> = {
   wedding: ["lehenga", "anarkali", "salwar"],
   bride: ["lehenga"],
@@ -580,7 +599,7 @@ function embellishmentOrParts(embellishments: string[]): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function buildProductQuery(parsed: ParsedQuery, limit = 90): any {
+export function buildProductQuery(parsed: ParsedQuery, limit = 90, enriched = false): any {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let dbQuery: any = supabase.from("products").select("*");
 
@@ -618,7 +637,9 @@ export function buildProductQuery(parsed: ParsedQuery, limit = 90): any {
   if (parsed.colors.length > 0) {
     const quoted = parsed.colors.map(c => `"${c}"`).join(",");
     dbQuery = dbQuery.or(
-      `color.in.(${quoted}),ai_colors.ov.{${quoted}},and(color.is.null,ai_colors.is.null)`
+      enriched
+        ? `color.in.(${quoted}),ai_colors.ov.{${quoted}},and(color.is.null,ai_colors.is.null)`
+        : `color.in.(${quoted}),color.is.null`
     );
   }
 
@@ -703,8 +724,9 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
     postFilterGarment((rows ?? []).filter(passesGender), parsed.garment_types);
 
   // ── Stage 0: all filters, taste profile fetched in parallel ───────
+  const enriched = await enrichmentAvailable();
   const [{ data, error }, tasteData] = await Promise.all([
-    buildProductQuery(parsed),
+    buildProductQuery(parsed, 90, enriched),
     userId ? fetchTasteCards(userId) : Promise.resolve({ liked: [], disliked: [] }),
   ]);
   if (error) throw new Error(error.message);
@@ -730,7 +752,7 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
   };
   const stage1Differs = stage1.colors.length !== parsed.colors.length || parsed.fabrics.length > 0;
   if (pool.length < 20 && stage1Differs) {
-    const { data: s1 } = await buildProductQuery(stage1, 60);
+    const { data: s1 } = await buildProductQuery(stage1, 60, enriched);
     mergeBatch(s1 as Product[]);
   }
   stageCounts.push(pool.length);
@@ -741,7 +763,7 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
     embellishments: parsed.embellishments.filter(e => explicit.embellishments.includes(e)),
   };
   if (pool.length < 10 && stage2.embellishments.length !== parsed.embellishments.length) {
-    const { data: s2 } = await buildProductQuery(stage2, 60);
+    const { data: s2 } = await buildProductQuery(stage2, 60, enriched);
     mergeBatch(s2 as Product[]);
   }
   stageCounts.push(pool.length);
@@ -785,7 +807,7 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
   let fillPool: Product[] = [];
   if (explicit.embellishments.length > 0 && pool.length < 20) {
     const fillParsed: ParsedQuery = { ...parsed, embellishments: [] };
-    const { data: fillData } = await buildProductQuery(fillParsed, 60);
+    const { data: fillData } = await buildProductQuery(fillParsed, 60, enriched);
     const poolIds = new Set(pool.map(p => p.id));
     fillPool = deduplicateProducts(cleanBatch(fillData as Product[]).filter(p => !poolIds.has(p.id)))
       .sort(byScore);
