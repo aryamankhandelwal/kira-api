@@ -179,6 +179,28 @@ const EMBELLISHMENTS: [RegExp, string][] = [
   [/\bstriped?\b/i, "striped"],
 ];
 
+// Occasion/mood words → aesthetic tags (values ⊂ gemini.ts VIBE_TAGS, which
+// products carry in aesthetic_tags). Lets vibe scoring work even when the
+// Gemini parse is unavailable.
+const VIBE_PATTERNS: [RegExp, string][] = [
+  [/\bsunset\b|\bgolden\s+hour\b|\bdusk\b/i, "sunset-warm"],
+  [/\bcocktail\b|\bshimmer\w*\b|\bsparkl\w*\b/i, "cocktail-shimmer"],
+  [/\bpastel\w*\b|\bdreamy\b|\bwhimsical\b|\bsoft\s+tones?\b/i, "pastel-dreamy"],
+  [/\bbridal\b|\bbride\b/i, "heavy-bridal"],
+  [/\bmodern\b|\bgen[\s-]?z\b|\bminimal\w*\b|\bcontemporary\b|\bchic\b/i, "minimal-modern"],
+  [/\bboho\b|\bbohemian\b|\bearthy\b|\brustic\b|\bfolk\b/i, "boho-earthy"],
+  [/\broyal\b|\bregal\b|\bmajestic\b/i, "regal-traditional"],
+  [/\bindo[\s-]?western\b|\bfusion\b/i, "indo-western-fusion"],
+  [/\bmetallic\b|\bdisco\b|\by2k\b|\bneon\b/i, "metallic-glam"],
+  [/\bfloral\b|\bgarden\s+party\b|\bspring\b|\bromantic\b/i, "floral-romantic"],
+  [/\bfestive\b|\bdiwali\b|\bhaldi\b|\bmeh[ae]ndi\b|\bnavratri\b/i, "festive-bright"],
+  [/\bold\s+money\b|\bquiet\s+luxury\b|\bunderstated\b/i, "understated-luxury"],
+  [/\bbeach\b|\bresort\b|\bcoastal\b|\btropical\b/i, "beach-resort"],
+  [/\bmidnight\b|\bnight\b|\bevening\b/i, "midnight-noir"],
+  [/\bjewel[\s-]tones?\b/i, "jewel-tone"],
+  [/\bmonochrome\b/i, "monochrome-chic"],
+];
+
 // Mirrors Gemini prompt rule 12 — when a user names a base color, expand to
 // close shades so the recall filter doesn't over-narrow on exact color strings.
 const COLOR_FAMILIES: Record<string, string[]> = {
@@ -340,6 +362,7 @@ export function deterministicParse(occasion: string): ParsedQuery {
     embellishments,
     keywords: [],
     gender_hint,
+    vibe_tags: matchAll(occasion, VIBE_PATTERNS).slice(0, 3),
   };
 }
 
@@ -393,6 +416,6 @@ export function mergeParsed(gemini: ParsedQuery, det: ParsedQuery): ParsedQuery 
     embellishments: union(gemini.embellishments, det.embellishments),
     keywords: gemini.keywords,
     gender_hint: gemini.gender_hint ?? det.gender_hint,
-    vibe_tags: gemini.vibe_tags ?? [],
+    vibe_tags: union(gemini.vibe_tags ?? [], det.vibe_tags ?? []).slice(0, 4),
   };
 }
