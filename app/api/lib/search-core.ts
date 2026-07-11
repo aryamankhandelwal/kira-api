@@ -56,16 +56,18 @@ export const SOURCE_TIER: Record<string, number> = {
   ridhi_mehra: 3, aisha_rao: 3, mishru: 3, sheetal_batra: 3, suruchi_parakh: 3,
   studio_bagechaa: 3, devnaagri: 3, old_marigold: 3, ritu_kumar: 3,
   saaksha_kinni: 3, taali: 3, basanti_ke_kapde: 3,
+  varunbahl: 3, rimple_harpreet: 3,
   // Tier 2 — Fashion-forward curators
   perniaspopupshop: 2, azafashions: 2, ogaan: 2, ensemble: 2, aashni: 2,
   // Tier 1 — Curators / fashion-forward retailers / menswear specialists
   the_loom: 1, manyavar: 1, tasva: 1, jade_blue: 1,
   benzer: 1, ahi_clothing: 1, karaj_jaipur: 1, gyans: 1, pratap_sons: 1,
   ridhiiee_suuri: 1, meena_bazaar: 1, tjori: 1, nalli: 1,
-  bunaai: 1, indethnic: 1, weaverstory: 1,
+  bunaai: 1, indethnic: 1, weaverstory: 1, kalkifashion: 1,
+  kankatala: 1, pothys: 1, sundarisilks: 1, shreeman: 1,
   clothsvilla: 1, suta: 1, fashor: 1, soch: 1, w_for_woman: 1, libas: 1,
   // Tier 0 — mass market (default for anything not listed)
-  kalkifashion: 0, chhabra555: 0, vastramay: 0, vasansi: 0, jaipurkurti: 0,
+  vastramay: 0, vasansi: 0, jaipurkurti: 0, sojanya: 0,
 };
 export function sourceTier(source: string): number { return SOURCE_TIER[source] ?? 0; }
 
@@ -76,17 +78,21 @@ export const SOURCE_STYLE_REGISTER: Record<string, "contemporary" | "traditional
   w_for_woman: "contemporary", saaksha_kinni: "contemporary", devnaagri: "contemporary",
   old_marigold: "contemporary", mishru: "contemporary", basanti_ke_kapde: "contemporary",
   bunaai: "contemporary", studio_bagechaa: "contemporary",
+  sheetal_batra: "contemporary", suruchi_parakh: "contemporary", tjori: "contemporary",
   // bridal
   manish_malhotra: "bridal", gaurav_gupta: "bridal", falguni_shane_peacock: "bridal",
   tarun_tahiliani: "bridal", anamika_khanna: "bridal", punit_balana: "bridal",
   jayanti_reddy: "bridal", payal_singhal: "bridal", ridhi_mehra: "bridal", aisha_rao: "bridal",
+  varunbahl: "bridal", rimple_harpreet: "bridal",
   // traditional
   kankatala: "traditional", pothys: "traditional", nalli: "traditional",
-  kalkifashion: "traditional", chhabra555: "traditional", vastramay: "traditional",
+  sundarisilks: "traditional", vastramay: "traditional",
   vasansi: "traditional", jaipurkurti: "traditional",
+  sojanya: "traditional", shreeman: "traditional", weaverstory: "traditional",
   // mixed
   azafashions: "mixed", perniaspopupshop: "mixed", nykaa: "mixed",
   ajio: "mixed", myntra: "mixed", anita_dongre: "mixed", ritu_kumar: "mixed",
+  kalkifashion: "mixed", benzer: "mixed", ensemble: "mixed", aashni: "mixed", ogaan: "mixed",
 };
 
 /** Map a Supabase product row into the OutfitCard shape the iOS app expects. */

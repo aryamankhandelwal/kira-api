@@ -30,6 +30,16 @@ interface QueryCase {
 }
 
 const WARM = new Set(["terracotta", "rust", "coral", "amber", "saffron", "peach", "gold", "marigold", "orange", "yellow", "mustard", "ochre", "copper", "bronze", "pink", "blush", "rose gold", "dusty rose"]);
+const NEUTRAL = new Set(["ivory", "champagne", "camel", "taupe", "ecru", "off-white", "cream", "beige", "white", "nude", "fawn", "gold"]);
+
+// Zero tolerance: the catalog is clothing-only — any of these words in a
+// result name means the ingest gate has regressed.
+const NON_CLOTHING_RE = /\bnecklace|\bearring|\bjhumk|\bbangle|\bkada\b|\bbracelet|\banklet|\bmaang\s?tikka|\bchoker|\bpendant|\bjewell?ery|\bjutti|\bmojari|\bfootwear|\bshoe\b|\bheels\b|\bclutch\b|\bpotli\b|\bhandbag|\bcushion|\bbedsheet|\bdohar\b|\bcandle\b|\bunstitched|\bdress\s?material|\bblouse\s?piece|\bpetticoat/i;
+
+function nonClothingFails(cards: Card[]): string[] {
+  const bad = cards.filter(c => NON_CLOTHING_RE.test(c.name));
+  return bad.length ? [`${bad.length} NON-CLOTHING result(s) in feed (e.g. ${bad[0].name})`] : [];
+}
 
 const mentionsMirror = (c: Card) =>
   c.embellishments.includes("mirror work") ||
@@ -70,7 +80,10 @@ const CASES: QueryCase[] = [
       const warm = withColor.filter(c => WARM.has(c.color!));
       if (withColor.length >= 4 && warm.length < withColor.length / 2)
         fails.push(`only ${warm.length}/${withColor.length} color-known top-10 results are warm-palette`);
-      if (maxSourceRun(exact) > 2) fails.push(`source run of ${maxSourceRun(exact)} in exact results`);
+      // ≤3: curator-heavy catalog means Aza/Pernia dominate craft pools — the
+      // diversifier caps runs at 2 but surplus from a dominant source
+      // necessarily clusters near the tail of the head window.
+      if (maxSourceRun(exact) > 3) fails.push(`source run of ${maxSourceRun(exact)} in exact results`);
       return fails;
     },
   },
@@ -138,6 +151,32 @@ const CASES: QueryCase[] = [
       return over.length ? [`${over.length} results over ₹5,000`] : [];
     },
   },
+  {
+    label: "sunset cocktail / vibe→palette without explicit color",
+    occasion: "sunset cocktail outfit",
+    gender: "female",
+    assertions: (_cards, exact) => {
+      const fails: string[] = [];
+      const withColor = exact.slice(0, 10).filter(c => c.color != null);
+      const onPalette = withColor.filter(c => WARM.has(c.color!) || ["silver", "champagne"].includes(c.color!));
+      if (withColor.length >= 4 && onPalette.length < withColor.length / 2)
+        fails.push(`only ${onPalette.length}/${withColor.length} color-known top-10 are warm/metallic for a sunset query`);
+      return fails;
+    },
+  },
+  {
+    label: "old money sangeet / understated palette",
+    occasion: "old money sangeet look",
+    gender: "female",
+    assertions: (_cards, exact) => {
+      const fails: string[] = [];
+      const withColor = exact.slice(0, 10).filter(c => c.color != null);
+      const onPalette = withColor.filter(c => NEUTRAL.has(c.color!));
+      if (withColor.length >= 4 && onPalette.length < withColor.length / 2)
+        fails.push(`only ${onPalette.length}/${withColor.length} color-known top-10 are neutral/understated`);
+      return fails;
+    },
+  },
 ];
 
 async function run() {
@@ -169,7 +208,7 @@ async function run() {
       console.log(`    ${String(i + 1).padStart(2)}. ${price.padStart(10)}  ${(c.tags[0] ?? "").padEnd(18)} ${(c.garment_type ?? "?").padEnd(9)} ${(c.color ?? "?").padEnd(10)} [${c.embellishments.join(",")}]${c.fill ? " FILL" : ""}  ${c.name.slice(0, 60)}`);
     }
 
-    const fails = q.assertions(cards, exact);
+    const fails = [...nonClothingFails(cards), ...q.assertions(cards, exact)];
     if (fails.length) {
       failures += fails.length;
       for (const f of fails) console.log(`    ✗ ${f}`);

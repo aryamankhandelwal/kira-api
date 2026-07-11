@@ -201,6 +201,49 @@ const VIBE_PATTERNS: [RegExp, string][] = [
   [/\bmonochrome\b/i, "monochrome-chic"],
 ];
 
+// Setting/mood words → color palettes + fabrics, mirroring the AESTHETIC &
+// SETTING VOCABULARY block in the Gemini SYSTEM_PROMPT (gemini.ts). Without
+// this, palette intent ("sunset engagement" → warm colors) is lost whenever
+// the Gemini parse is unavailable. These expansions are INFERRED, never
+// explicit — detectExplicit() only reads the literal COLORS table, so the
+// recall cascade can still drop them when results run short.
+const SETTING_EXPANSIONS: [RegExp, { colors: string[]; fabrics: string[] }][] = [
+  [/\bsunset\b|\bgolden\s+hour\b|\bdusk\b/i,
+    { colors: ["terracotta", "rust", "coral", "amber", "saffron", "peach", "gold", "marigold"],
+      fabrics: ["georgette", "chiffon", "organza"] }],
+  [/\bgarden\s+party\b|\bspring\b|\bbrunch\b/i,
+    { colors: ["blush", "mint", "lavender", "sage", "peach", "ivory"],
+      fabrics: ["organza", "chiffon", "georgette"] }],
+  [/\bbeach\b|\bcoastal\b|\bresort\b|\btropical\b/i,
+    { colors: ["aqua", "turquoise", "sky blue", "coral", "white", "gold"],
+      fabrics: ["chiffon", "georgette", "linen"] }],
+  [/\bmidnight\b|\bnight\b|\bevening\b/i,
+    { colors: ["black", "navy", "plum", "burgundy", "charcoal", "silver", "gold"],
+      fabrics: ["velvet", "brocade", "satin"] }],
+  [/\bold\s+money\b|\bquiet\s+luxury\b|\bunderstated\b|\bminimal\w*\b/i,
+    { colors: ["ivory", "champagne", "camel", "taupe", "ecru", "off-white", "cream", "beige"],
+      fabrics: ["silk", "crepe", "linen"] }],
+  [/\bboho\b|\bbohemian\b|\bearthy\b|\brustic\b/i,
+    { colors: ["ochre", "rust", "olive", "cream", "terracotta", "mustard"],
+      fabrics: ["cotton", "linen", "khadi"] }],
+  [/\bdisco\b|\by2k\b|\bneon\b|\brave\b/i,
+    { colors: ["fuchsia", "cobalt", "gold", "silver", "magenta"],
+      fabrics: ["georgette", "crepe"] }],
+  [/\bpastel\w*\b|\bdreamy\b|\bwhimsical\b/i,
+    { colors: ["blush", "lavender", "mint", "powder blue", "peach", "lilac", "dusty rose"],
+      fabrics: ["organza", "chiffon"] }],
+  [/\broyal\b|\bregal\b|\bmajestic\b/i,
+    { colors: ["royal blue", "burgundy", "maroon", "plum", "gold", "ivory"],
+      fabrics: ["velvet", "brocade", "silk"] }],
+  [/\bhaldi\b/i,
+    { colors: ["yellow", "marigold", "mustard", "saffron", "amber"], fabrics: [] }],
+  [/\bmeh[ae]ndi\b/i,
+    { colors: ["green", "olive green", "sage green", "mint", "marigold"], fabrics: [] }],
+  [/\bwinter\b|\bchristmas\b/i,
+    { colors: ["red", "maroon", "burgundy", "wine", "gold", "green"],
+      fabrics: ["velvet", "silk", "brocade"] }],
+];
+
 // Mirrors Gemini prompt rule 12 — when a user names a base color, expand to
 // close shades so the recall filter doesn't over-narrow on exact color strings.
 const COLOR_FAMILIES: Record<string, string[]> = {
@@ -340,10 +383,19 @@ export function deterministicParse(occasion: string): ParsedQuery {
   const { max_price, min_price } = parsePrice(occasion);
   const garment_types = matchAll(occasion, GARMENT_TYPES);
   const embellishments = matchAll(occasion, EMBELLISHMENTS);
-  const fabrics = matchAll(occasion, FABRICS);
+  let fabrics = matchAll(occasion, FABRICS);
 
   // Expand literal colors with close shades (recall filter would over-narrow otherwise)
-  const colors = expandColors(matchAll(occasion, COLORS));
+  let colors = expandColors(matchAll(occasion, COLORS));
+
+  // Setting/mood words expand to palettes + fabrics (inferred — droppable by
+  // the recall cascade, unlike the literal colors above)
+  for (const [pattern, expansion] of SETTING_EXPANSIONS) {
+    if (pattern.test(occasion)) {
+      colors = [...new Set([...colors, ...expansion.colors])];
+      fabrics = [...new Set([...fabrics, ...expansion.fabrics])];
+    }
+  }
 
   // Only explicit person-words set a hint — garment words (lehenga, sherwani)
   // don't imply the shopper's gender; the profile gender handles that upstream.
