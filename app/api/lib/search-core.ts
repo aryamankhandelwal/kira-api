@@ -106,6 +106,8 @@ export function toOutfitCard(p: Product) {
     id: p.id,
     brand,
     name: p.title,
+    // `products.price` is always INR — the scraper (shauk-scraper) detects and
+    // converts any non-INR currency at ingest time, so no conversion happens here.
     price: p.price != null ? `₹${p.price.toLocaleString("en-IN")}` : null,
     price_numeric: p.price,
     currency: p.currency ?? "INR",
