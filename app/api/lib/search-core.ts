@@ -2,6 +2,7 @@
 // Owns: product typing, source tiers, ranking, dedup, taste profile,
 // query building, cascade relaxation, gender/size filtering.
 import { createClient } from "@supabase/supabase-js";
+import { brandLikePatterns, brandMatchesTitle, MULTI_BRAND_SOURCES } from "./brands";
 import { classifyProduct } from "./classifier";
 import {
   ExplicitFlags,
@@ -335,6 +336,14 @@ export function scoreProduct(p: Product, ctx: ScoreContext): number {
   const { parsed } = ctx;
   let score = 0;
 
+  // Requested designer — house pieces rank above curator listings of the
+  // same designer (both already passed the hard brand filter).
+  const brands = parsed.brands ?? [];
+  if (brands.length > 0) {
+    if (brands.includes(p.source)) score += 300;
+    else if (brands.some(b => brandMatchesTitle(p.title, b))) score += 150;
+  }
+
   // Requested embellishments — the query's soul when present
   if (parsed.embellishments.length > 0) {
     let columnPoints = 0;
@@ -425,6 +434,38 @@ export function postFilterGarment(products: Product[], garmentTypes: string[]): 
   return products.filter(p =>
     (p.garment_type != null && garmentTypes.includes(p.garment_type)) ||
     garmentTypes.some(g => textMatchesGarment(p.title, g))
+  );
+}
+
+/**
+ * Named designers are a HARD filter: only the designer's own listings pass,
+ * plus multi-designer curators whose title credits the designer. A title
+ * mention on any other single-brand source ("Manish Malhotra inspired")
+ * does not count.
+ */
+export function postFilterBrand(products: Product[], brands: string[]): Product[] {
+  if (brands.length === 0) return products;
+  return products.filter(p =>
+    brands.includes(p.source) ||
+    (MULTI_BRAND_SOURCES.has(p.source) && brands.some(b => brandMatchesTitle(p.title, b)))
+  );
+}
+
+/**
+ * Explicitly-typed colors are a HARD filter: a product survives only with
+ * positive color evidence inside the requested palette — the classified
+ * column, the AI-verified image colors, or the title. Conflicting AND
+ * unknown-color products are dropped ("red saree" returns only red sarees).
+ * The palette includes close shades (red → maroon, burgundy, wine…) so
+ * legitimate matches labelled with a neighbouring shade aren't lost.
+ */
+export function postFilterExplicitColor(products: Product[], explicitColors: string[]): Product[] {
+  if (explicitColors.length === 0) return products;
+  const palette = new Set(expandColors(explicitColors));
+  return products.filter(p =>
+    (p.color != null && palette.has(p.color)) ||
+    (p.ai_colors ?? []).some(c => palette.has(c)) ||
+    [...palette].some(c => textMatchesColor(p.title, c))
   );
 }
 
@@ -619,9 +660,25 @@ export function buildProductQuery(parsed: ParsedQuery, limit = 90, enriched = fa
     dbQuery = dbQuery.gte("price", parsed.min_price);
   }
 
+  // Brand filter — the designer's own source OR their name in a title
+  // (curator listings). postFilterBrand re-checks title hits with word
+  // boundaries and restricts them to multi-brand sources.
+  const brands = parsed.brands ?? [];
+  if (brands.length > 0) {
+    const parts = [
+      `source.in.(${brands.join(",")})`,
+      ...brandLikePatterns(brands).map(l => `title.ilike.${l}`),
+    ];
+    dbQuery = dbQuery.or(parts.join(","));
+  }
+
   // Garment/keyword filter — OR across garment_type column AND title text
   if (parsed.garment_types.length > 0) {
     dbQuery = dbQuery.or(garmentOrParts(parsed.garment_types));
+  } else if (brands.length > 0) {
+    // A named brand with no garment is already a precise filter — do NOT add
+    // the keyword fallback (it would ILIKE the brand name against every
+    // source's titles and drag in unrelated products).
   } else if (parsed.keywords.length > 0) {
     // When Gemini fails, keywords[0] is the full occasion phrase (e.g. "wedding guest outfit").
     // An ILIKE on a multi-word phrase won't match any product title.
@@ -708,9 +765,12 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
 
   // Explicitly-named garments are exclusive: "mirror work lehenga" means
   // lehengas ONLY — not the anarkalis/shararas Gemini adds for the occasion.
-  const parsed: ParsedQuery = explicit.garments.length > 0
-    ? { ...params.parsed, garment_types: explicit.garments }
-    : params.parsed;
+  // Explicitly-named brands are always enforced, whatever the parse produced.
+  const parsed: ParsedQuery = {
+    ...params.parsed,
+    ...(explicit.garments.length > 0 ? { garment_types: explicit.garments } : {}),
+    brands: [...new Set([...(params.parsed.brands ?? []), ...explicit.brands])],
+  };
 
   // ── Gender filter (post-fetch, using classifier) ─────────────────
   const passesGender = (p: Product): boolean => {
@@ -727,9 +787,16 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
     return true;
   };
 
-  // Gender + word-boundary garment check, applied to every fetch
+  // Hard constraints applied to every fetch: gender, word-boundary garment
+  // check, named brands, and explicitly-typed colors.
   const cleanBatch = (rows: Product[] | null): Product[] =>
-    postFilterGarment((rows ?? []).filter(passesGender), parsed.garment_types);
+    postFilterExplicitColor(
+      postFilterBrand(
+        postFilterGarment((rows ?? []).filter(passesGender), parsed.garment_types),
+        parsed.brands ?? []
+      ),
+      explicit.colors
+    );
 
   // ── Stage 0: all filters, taste profile fetched in parallel ───────
   const enriched = await enrichmentAvailable();
@@ -832,6 +899,7 @@ export async function runSearchPipeline(params: PipelineParams): Promise<Pipelin
 
   console.log("[search-core]", JSON.stringify({
     occasion,
+    brands: parsed.brands ?? [],
     garments: parsed.garment_types,
     embellishments: parsed.embellishments,
     colors: parsed.colors.length,

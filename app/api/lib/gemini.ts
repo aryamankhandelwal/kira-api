@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { VALID_BRAND_KEYS } from "./brands";
 import { deterministicParse } from "./deterministic-parse";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
@@ -22,6 +23,9 @@ export interface ParsedQuery {
   /** Aesthetic mood tags matched against products' AI image enrichment.
    *  Optional + additive so old base64 sessionTokens keep decoding. */
   vibe_tags?: string[];
+  /** Requested designers/retailers (brand keys from brands.ts) — enforced as
+   *  a hard filter. Optional + additive so old base64 sessionTokens keep decoding. */
+  brands?: string[];
 }
 
 // SYNC: shauk-scraper/src/lib/enrich.ts AESTHETIC_TAGS — same list, same order.
@@ -313,6 +317,7 @@ export function sanitiseParsed(raw: any): ParsedQuery {
     keywords: Array.isArray(raw.keywords) ? raw.keywords : [],
     gender_hint: raw.gender_hint === "male" || raw.gender_hint === "female" ? raw.gender_hint : null,
     vibe_tags: (raw.vibe_tags ?? []).filter((t: string) => VIBE_TAGS.includes(t)),
+    brands: (raw.brands ?? []).filter((b: string) => VALID_BRAND_KEYS.has(b)),
   };
 }
 

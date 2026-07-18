@@ -7,6 +7,7 @@
 // SYNC: the vocabulary tables below are ported from
 // shauk-scraper/src/lib/metadata.ts (GARMENT_TYPES / COLORS / FABRICS /
 // EMBELLISHMENTS). If patterns change there, mirror the change here.
+import { detectBrands, stripBrands } from "./brands";
 import { ParsedQuery } from "./gemini";
 
 // ── Vocabulary tables (SYNC with shauk-scraper/src/lib/metadata.ts) ────
@@ -379,7 +380,12 @@ function matchAll(text: string, table: [RegExp, string][]): string[] {
  * 1. the fallback when the Gemini parse fails, and
  * 2. a merge partner on success, so literal constraints can never be dropped.
  */
-export function deterministicParse(occasion: string): ParsedQuery {
+export function deterministicParse(rawOccasion: string): ParsedQuery {
+  // Brand names are detected first, then stripped, so they never leak into
+  // the other vocabularies ("Jade Blue" → blue, "Old Marigold" → marigold).
+  const brands = detectBrands(rawOccasion);
+  const occasion = brands.length > 0 ? stripBrands(rawOccasion) : rawOccasion;
+
   const { max_price, min_price } = parsePrice(occasion);
   const garment_types = matchAll(occasion, GARMENT_TYPES);
   const embellishments = matchAll(occasion, EMBELLISHMENTS);
@@ -415,6 +421,7 @@ export function deterministicParse(occasion: string): ParsedQuery {
     keywords: [],
     gender_hint,
     vibe_tags: matchAll(occasion, VIBE_PATTERNS).slice(0, 3),
+    brands,
   };
 }
 
@@ -431,15 +438,20 @@ export interface ExplicitFlags {
   garments: string[];
   embellishments: string[];
   colors: string[];
+  brands: string[];
   price: boolean;
 }
 
-export function detectExplicit(occasion: string): ExplicitFlags {
+export function detectExplicit(rawOccasion: string): ExplicitFlags {
+  const brands = detectBrands(rawOccasion);
+  // Brand names stripped first — see deterministicParse.
+  const occasion = brands.length > 0 ? stripBrands(rawOccasion) : rawOccasion;
   const { max_price, min_price } = parsePrice(occasion);
   return {
     garments: matchAll(occasion, GARMENT_TYPES),
     embellishments: matchAll(occasion, EMBELLISHMENTS),
     colors: matchAll(occasion, COLORS),
+    brands,
     price: max_price != null || min_price != null,
   };
 }
@@ -469,5 +481,6 @@ export function mergeParsed(gemini: ParsedQuery, det: ParsedQuery): ParsedQuery 
     keywords: gemini.keywords,
     gender_hint: gemini.gender_hint ?? det.gender_hint,
     vibe_tags: union(gemini.vibe_tags ?? [], det.vibe_tags ?? []).slice(0, 4),
+    brands: union(gemini.brands ?? [], det.brands ?? []),
   };
 }
